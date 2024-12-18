@@ -9,7 +9,7 @@ deg2rad = np.pi / 180
 mm2m = 0.001
 enc_unit = [deg2rad, mm2m]
 
-def unitConvert(configuration, generation, fileName):
+def unitConvert(configuration, fileName):
     with open(configuration, 'r') as file:
         robot_json = json.load(file)
     robot_data = np.genfromtxt(fileName, delimiter=",", dtype=None, names=True,encoding='utf-8')
@@ -19,10 +19,17 @@ def unitConvert(configuration, generation, fileName):
     Curr_B2C, Curr_C2B, Curr_Nm2C, Enc_B2P, Pot_B2V, Pot_V2P = {}, {}, {}, {}, {}, {}
     Time, Torq_FB, Torq_CMD, Pos_FB, Vel_FB = {}, {}, {}, {}, {}
 
-    if (bool(Actuators[0]['Pot']['LookupTable']) == (generation == "Classic")):
+    # Extract column names
+    column_names = robot_data.dtype.names
+
+    # Find the channels 'MOTOR_CURRENT_i'
+    motor_columns = [name for name in column_names if name.startswith('MOTOR_CURRENT_')]
+    motorCurrentChannels = max(int(name.split('_')[-1]) for name in motor_columns)
+
+    if (bool(Actuators[0]['Pot']['LookupTable']) == (motorCurrentChannels == 8)):
         raise ValueError(
-            "Invalid configuration: Either 'LookupTable' must be None if 'generation' is 'Si', "
-            "or 'Lookuptable' must not be None if 'generation' is 'classic'."
+            "Invalid configuration: Either 'LookupTable' must be None if robot is 'Si', "
+            "or 'Lookuptable' must not be None if robot is 'classic'."
         )
 
     # Equation reference:
@@ -52,7 +59,7 @@ def unitConvert(configuration, generation, fileName):
     }
 
 def saveConfigFile(fileName, dataConverted):
-    fileName = f"{os.path.splitext(fileName)[0]}_unitConvert.csv"
+    fileNameConverted = f"{os.path.splitext(fileName)[0]}_unitConvert.csv"
 
     # Combine all the columns into one table
     columns = {}
@@ -67,7 +74,7 @@ def saveConfigFile(fileName, dataConverted):
             columns[key].extend([None] * (max_len - len(columns[key])))
 
     # Write to CSV
-    with open(fileName, mode='w', newline='') as file:
+    with open(fileNameConverted, mode='w', newline='') as file:
         writer = csv.writer(file)
         # Write the header
         writer.writerow(columns.keys())
@@ -75,7 +82,7 @@ def saveConfigFile(fileName, dataConverted):
         for row in zip(*columns.values()):
             writer.writerow(row)
 
-    print(f"Data written to {fileName}")
+    print(f"Data written to {fileNameConverted}")
 
 def main():
     # Create the argument parser
@@ -89,15 +96,6 @@ def main():
         default=None
     )
     parser.add_argument(
-        "-g",
-        "--generation",
-        type=str,
-        required=True,
-        choices=["Classic", "Si"],
-        help="robot arm hardware generation",
-        default=argparse.SUPPRESS,
-    )
-    parser.add_argument(
         "-f",
         "--file-name",
         type=str,
@@ -109,11 +107,9 @@ def main():
     args = parser.parse_args()
 
     dataConverted = {}
-    dataConverted = unitConvert(args.configuration, args.generation, args.file_name)
+    dataConverted = unitConvert(args.configuration, args.file_name)
 
     saveConfigFile(args.file_name, dataConverted)
-
-    print(f"Successfully saved to: {args.file_name}")
 
 if __name__ == "__main__":
     main()
