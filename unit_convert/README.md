@@ -7,7 +7,7 @@ This subfolder contains a Python script to convert bits (raw data) into SI unit 
 - Example command:
 
 ```
-         python unit_convert.py -c sawRobotIO1394-PSM1-26611.xml.json -f capture_Mon_Dec__9_14_07_18_2024.csv -g Classic
+         python unit_convert.py -c sawRobotIO1394-PSM1-26611.xml.json -f capture_Mon_Dec__9_14_07_18_2024.csv
 ```
 
 ## Output
