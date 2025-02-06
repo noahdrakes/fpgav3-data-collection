@@ -4,11 +4,12 @@ This subfolder contains a Python script to convert bits (raw data) into SI unit 
 
 ## Preparation
 
-Typically, the dVRK stack uses XML file to describe robot and store robot specific parameters, such as calibrated current or encoder offsets. Python, however, does a better job in handling json files. There is an existing application built upon Amp1394 library in the [mechatronics-software](https://github.com/jhu-cisst/mechatronics-software.git), called "sawRobotIO1394XMLtoJSON". You can compile the mechatronics-softwrae repository to get this application, or you can compile the [dVRK ROS package](https://dvrk.readthedocs.io/en/latest/pages/software.html) to get it (this package contains the mechatronics-software, aka sawRobotIO, as a submodule). An example command for using this application to convert an XML file to json:
+The dVRK software uses XML files to describe the robot and store robot specific parameters, such as calibrated current or encoder offsets. Python, however, does a better job in handling json files. There is an existing application in the [sawRobotIO1394 repository](https://github.com/jhu-saw/sawRobotIO1394.git), called `sawRobotIO1394XMLtoJSON`. You can compile the sawRobotIO1394 repository to get this application, or you can compile the [dVRK ROS package](https://dvrk.readthedocs.io/en/latest/pages/software.html) to get it (this package contains sawRobotIO1394 as a submodule). An example command for using this application to convert an XML file to json:
 
 ```
          sawRobotIO1394XMLtoJSON -c sawRobotIO1394-PSM1-26611.xml
 ```
+The output file name is based on the input file name, with ".json" appended. For the above command, the output json file would be called `sawRobotIO1394-PSM1-26611.xml.json`.
 
 ## Running 
 
