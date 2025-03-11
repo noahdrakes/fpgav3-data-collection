@@ -61,7 +61,7 @@ enum StateMachineReturnCodes {
     SM_PS_IO_FAIL,
     SM_OUT_OF_SYNC,
     SM_UDP_INVALID_HOST_ADDR,
-    SM_FAIL
+    SM_FAILED_TO_CREATE_THREAD,
 };
 
 // Commands Sent between Host and Zynq

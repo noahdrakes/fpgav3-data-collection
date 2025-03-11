@@ -57,6 +57,43 @@ volatile uint32_t *GPIO_MEM_REGION;
 // FLAG for including Processor IO in data packets
 bool use_ps_io_flag = false;
 
+///////////////////////////////////
+///// STATE MACHINE VARIABLES /////
+//////////////////////////////////
+
+// Double Buffer Struct handling double buffer between collecting and transmitting data between 
+// threads
+struct Double_Buffer_Info {
+    uint32_t double_buffer[2][UDP_MAX_PACKET_SIZE/4]; //note: changed from 1500 which makes sense
+    uint16_t buffer_size; 
+    uint8_t prod_buf;
+    uint8_t cons_buf;
+    atomic_uint8_t cons_busy; 
+};
+
+// have methods return new state
+// slim down sm struct to non local 
+
+DataCollectionMeta data_collection_meta;
+Double_Buffer_Info db;
+char recvd_cmd[CMD_MAX_STRING_SIZE] = {0};
+
+
+struct Dvrk_Controller {
+    BasePort *Port;
+    AmpIO *Board;   
+} dvrk_controller;
+
+struct SM{
+    // states
+    int state = 0;
+    int last_state = 0;  
+
+    // return codes
+    int ret = 0;
+    int udp_ret;
+};
+
 
 // DEBUGGING VARIABLES 
 int data_packet_count = 0;
@@ -109,15 +146,6 @@ struct UDP_Info {
 } udp_host; // this is global bc there will only be one
 
 
-// Double Buffer Struct handling double buffer between collecting and transmitting data between 
-// threads
-struct Double_Buffer_Info {
-    uint32_t double_buffer[2][UDP_MAX_PACKET_SIZE/4]; //note: changed from 1500 which makes sense
-    uint16_t buffer_size; 
-    uint8_t prod_buf;
-    uint8_t cons_buf;
-    atomic_uint8_t cons_busy; 
-};
 
 
 static int mio_mmap_init()
@@ -313,7 +341,7 @@ static float convert_chrono_duration_to_float(chrono::high_resolution_clock::tim
 // loads data buffer for data collection
     // size of the data buffer is dependent on encoder count and motor count
     // see calculate_quadlets_per_sample method for data formatting
-static bool load_data_packet(BasePort *Port, AmpIO *Board, uint32_t *data_packet, uint8_t num_encoders, uint8_t num_motors)
+static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_packet, uint8_t num_encoders, uint8_t num_motors)
 {
     if (data_packet == NULL) {
         cout << "[ERROR - load_data_packet] databuffer pointer is null" << endl;
@@ -331,11 +359,11 @@ static bool load_data_packet(BasePort *Port, AmpIO *Board, uint32_t *data_packet
     // CAPTURE DATA 
     for (int i = 0; i < samples_per_packet; i++) {
 
-        while(!Port->ReadAllBoards()) {
+        while(!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
         }
 
-        if (!Board->ValidRead()) {
+        if (!dvrk_controller.Board->ValidRead()) {
             cout << "[ERROR in load_data_packet] invalid read for ReadAllBoards" << endl;
             return false;
         }
@@ -348,25 +376,25 @@ static bool load_data_packet(BasePort *Port, AmpIO *Board, uint32_t *data_packet
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
-            int32_t encoder_pos = Board->GetEncoderPosition(i);
-            data_packet[count++] = static_cast<uint32_t>(encoder_pos + Board->GetEncoderMidRange());
+            int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i);
+            data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
         }
 
         // DATA 3: encoder velocity
         for (int i = 0; i < num_encoders; i++) {
-            float encoder_velocity_float= static_cast<float>(Board->GetEncoderVelocityPredicted(i));
+            float encoder_velocity_float= static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
             data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
         }
 
         // DATA 4 & 5: motor current and motor status (for num_motors)
         for (int i = 0; i < num_motors; i++) {
-            uint32_t motor_curr = Board->GetMotorCurrent(i); 
-            uint32_t motor_status = Board->GetMotorStatus(i);
+            uint32_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); 
+            uint32_t motor_status = dvrk_controller.Board->GetMotorStatus(i);
             data_packet[count++] = (uint32_t)(((motor_status & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
         }
 
         if (use_ps_io_flag){
-            data_packet[count++] = Board->ReadDigitalIO();
+            data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
         
@@ -420,272 +448,316 @@ void *consume_data(void *arg)
     return nullptr;
 }
 
-static int dataCollectionStateMachine(BasePort *port, AmpIO *board)
+SM wait_for_host_handshake( SM sm ){
+    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd,  HOST_READY_CMD) == 0) {
+            cout << "Received Message - " <<  HOST_READY_CMD << endl;
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }                    
+        
+        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_PS_IO) == 0){
+            cout << "Received Message - " <<  HOST_READY_CMD_W_PS_IO << endl;
+            use_ps_io_flag = true;
+
+            // special case: need to resize double_buffer size to account
+            // for extra ps io data
+            reset_double_buffer_info(&db, dvrk_controller.Board); 
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }
+
+        else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM send_data_collection_meta_data( SM sm ){
+    package_meta_data(&data_collection_meta, dvrk_controller.Board);
+
+    if (udp_transmit(&udp_host,  &data_collection_meta, sizeof(struct DataCollectionMeta )) < 1 ) {
+        sm.ret = SM_UDP_INVALID_HOST_ADDR;
+        sm.last_state = SM_TERMINATE;
+    }
+    else {
+        sm.state = SM_WAIT_FOR_HOST_RECV_METADATA;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_to_recv_metadata( SM sm ){
+    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd, HOST_RECVD_METADATA) == 0) {
+            cout << "Received Message: " << HOST_RECVD_METADATA << endl;
+            cout << "Handshake Complete!" << endl;
+
+            sm.state = SM_SEND_READY_STATE_TO_HOST;
+        } else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        // Stay in same state
+        sm.state = SM_WAIT_FOR_HOST_RECV_METADATA;
+    } else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM send_ready_state_to_host( SM sm ){
+    if (udp_transmit(&udp_host,  (char *) ZYNQ_READY_CMD, sizeof(ZYNQ_READY_CMD)) < 1 ) {
+        sm.ret = SM_UDP_INVALID_HOST_ADDR;
+        sm.state = SM_TERMINATE;
+    }
+    else {
+        sm.state = SM_WAIT_FOR_HOST_START_CMD;
+        cout << endl << "Waiting for Host to start data collection..." << endl << endl;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_start_cmd( SM sm ){
+    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd, HOST_START_DATA_COLLECTION) == 0) {
+            cout << "Received Message: " <<  recvd_cmd << endl;
+            sm.state = SM_START_DATA_COLLECTION;
+        }
+        else if (strcmp(recvd_cmd, HOST_TERMINATE_SERVER) == 0) {
+            cout << "Received Message: " <<  recvd_cmd << endl;
+            sm.ret = SM_SUCCESS;
+            sm.state = SM_TERMINATE;
+        }
+        else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_START_CMD;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM start_consumer_thread( SM sm , pthread_t *consumer_t){
+    // Starting Consumer Thread: sends packets to host
+    if (pthread_create(consumer_t, nullptr, consume_data, &db) != 0) {
+        std::cerr << "Error creating consumer thread" << std::endl;
+        sm.state = SM_EXIT;
+        sm.ret = SM_FAILED_TO_CREATE_THREAD;
+    }
+
+    pthread_detach(*consumer_t);
+
+    sm.state = SM_PRODUCE_DATA;
+
+    return sm;
+}
+
+SM produce_data( SM sm ){
+
+    if ( !load_data_packet(dvrk_controller, db.double_buffer[db.prod_buf], data_collection_meta.num_encoders, data_collection_meta.num_motors)) {
+        cout << "[ERROR]load data buffer fail" << endl;
+        sm.state = SM_EXIT;
+        sm.ret = SM_BOARD_ERROR;
+        return sm;
+    }
+
+    while (db.cons_busy) {}
+
+    // Switch to the next buffer
+    db.prod_buf = (db.prod_buf + 1) % 2;
+
+    sm.state = SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD;
+
+    return sm;
+}
+
+SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
+
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd, HOST_STOP_DATA_COLLECTION) == 0) {
+            cout << "Message from Host: STOP DATA COLLECTION" << endl;
+
+            stop_data_collection_flag = true;
+
+            pthread_join(consumer_t, nullptr);
+
+            cout << "------------------------------------------------" << endl;
+            cout << "UDP DATA PACKETS SENT TO HOST: " << data_packet_count << endl;
+            cout << "SAMPLES SENT TO HOST: " << sample_count << endl;
+            cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
+            cout << "------------------------------------------------" << endl << endl;
+
+            emio_read_error_counter = 0; 
+            data_packet_count = 0;
+            sample_count = 0;
+
+            sm.state = SM_WAIT_FOR_HOST_START_CMD;
+            cout << "Waiting for command from host..." << endl;
+            
+        } else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    } else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE){
+        sm.state = SM_PRODUCE_DATA;
+    } else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM start_data_collection(SM sm){
+    stop_data_collection_flag = false;
+    start_time = std::chrono::high_resolution_clock::now();
+    sm.state = SM_START_CONSUMER_THREAD;
+    return sm;
+}
+
+SM terminate_data_collection(SM sm){
+
+    if (sm.ret != SM_SUCCESS) {
+
+        cout << "[ERROR] STATEMACHINE TERMINATING" << endl;
+
+        cout << "At STATE " << sm.last_state << " ";
+
+        switch (sm.ret){
+            
+            case SM_OUT_OF_SYNC:
+                cout << "Zynq of sync with Host. Received unexpected command: " << recvd_cmd << endl;
+                break;
+            case SM_UDP_ERROR:
+                cout << "Udp ERROR. Make sure host program is running." << endl;
+                break;
+            case SM_UDP_INVALID_HOST_ADDR:
+                cout << "Udp ERROR. Invalid Host Address format" << endl;
+                break;
+            case SM_FAILED_TO_CREATE_THREAD:
+                cout << "Failed to Create Thread" << endl;
+            case SM_BOARD_ERROR:
+                cout << "Board Error" << endl;
+        }
+
+    } else {
+        cout << "STATE MACHINE SUCCESS !" << endl;
+    }
+
+    cout << endl << ZYNQ_TERMINATATION_SUCCESSFUL << endl;
+
+    udp_transmit(&udp_host,  (void*) ZYNQ_TERMINATATION_SUCCESSFUL, sizeof(ZYNQ_TERMINATATION_SUCCESSFUL));
+
+    close(udp_host.socket);
+    sm.state = SM_EXIT;
+
+    return sm;
+}
+
+
+static int dataCollectionStateMachine()
 {
+    SM sm;
+    pthread_t consumer_t;
+    
     cout << "Starting Handshake Routine..." << endl << endl;
     cout << "Start Data Collection Client on HOST to complete handshake..." << endl;
 
-    // RETURN CODES
-    // state machine return code
-    int sm_ret = 0;
-    // udp return code
-    int udp_ret;
+    reset_double_buffer_info(&db, dvrk_controller.Board);
 
-    // state status 
-    int state = 0;
-    int last_state = 0;
-
-    Double_Buffer_Info db;
-    reset_double_buffer_info(&db, board);
-    
     if (mio_mmap_init() != 0) {
-        state = SM_TERMINATE;
-        sm_ret = SM_PS_IO_FAIL;
+        sm.state = SM_TERMINATE;
+        sm.ret = SM_PS_IO_FAIL;
     }
 
-    char recvdCMD[CMD_MAX_STRING_SIZE] = {0};
+    sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
 
-    struct DataCollectionMeta data_collection_meta;
+    while (sm.state != SM_EXIT) {
 
-    uint8_t num_encoders = board->GetNumEncoders();
-    uint8_t num_motors = board->GetNumMotors();
-
-    pthread_t consumer_t;
-
-    state = SM_WAIT_FOR_HOST_HANDSHAKE;
-
-    while (state != SM_EXIT) {
-
-        switch (state) {
+        switch (sm.state) {
 
             case SM_WAIT_FOR_HOST_HANDSHAKE:
-
-                memset(recvdCMD, 0, CMD_MAX_STRING_SIZE);
-                udp_ret = udp_nonblocking_receive(&udp_host, recvdCMD, CMD_MAX_STRING_SIZE);
-
-                if (udp_ret > 0) {
-                    if (strcmp(recvdCMD,  HOST_READY_CMD) == 0) {
-                        cout << "Received Message - " <<  HOST_READY_CMD << endl;
-                        state = SM_SEND_DATA_COLLECTION_METADATA;
-                    }                    
-                    
-                    else if (strcmp(recvdCMD, HOST_READY_CMD_W_PS_IO) == 0){
-                        cout << "Received Message - " <<  HOST_READY_CMD_W_PS_IO << endl;
-                        use_ps_io_flag = true;
-
-                        // special case: need to resize double_buffer size to account
-                        // for extra ps io data
-                        reset_double_buffer_info(&db, board); 
-                        state = SM_SEND_DATA_COLLECTION_METADATA;
-                    }
-
-                    else {
-                        sm_ret = SM_OUT_OF_SYNC;
-                        last_state = state;
-                        state = SM_TERMINATE;
-                    }
-                }
-                else if (udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-                    state = SM_WAIT_FOR_HOST_HANDSHAKE;
-                }
-                else {
-                    sm_ret = SM_UDP_ERROR;
-                    last_state = state;
-                    state = SM_TERMINATE;
-                }
+                sm = wait_for_host_handshake(sm);
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:
-
-                package_meta_data(&data_collection_meta, board);
-
-                if (udp_transmit(&udp_host,  &data_collection_meta, sizeof(struct DataCollectionMeta )) < 1 ) {
-                    sm_ret = SM_UDP_INVALID_HOST_ADDR;
-                    state = SM_TERMINATE;
-                }
-                else {
-                    state = SM_WAIT_FOR_HOST_RECV_METADATA;
-                }
+                sm = send_data_collection_meta_data(sm);
                 break;
 
             case SM_WAIT_FOR_HOST_RECV_METADATA:
-
-                memset(recvdCMD, 0, CMD_MAX_STRING_SIZE);
-                udp_ret = udp_nonblocking_receive(&udp_host, recvdCMD, CMD_MAX_STRING_SIZE);
-
-                if (udp_ret > 0) {
-                    if (strcmp(recvdCMD, HOST_RECVD_METADATA) == 0) {
-                        cout << "Received Message: " << HOST_RECVD_METADATA << endl;
-                        cout << "Handshake Complete!" << endl;
-
-                        state = SM_SEND_READY_STATE_TO_HOST;
-                    } else {
-                        sm_ret = SM_OUT_OF_SYNC;
-                        last_state = state;
-                        state = SM_TERMINATE;
-                    }
-                }
-                else if (udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-                    // Stay in same state
-                    state = SM_WAIT_FOR_HOST_RECV_METADATA;
-                } else {
-                    sm_ret = SM_UDP_ERROR;
-                    last_state = state;
-                    state = SM_TERMINATE;
-                }
+                sm = wait_for_host_to_recv_metadata(sm);
                 break;
 
             case SM_SEND_READY_STATE_TO_HOST:
-
-                if (udp_transmit(&udp_host,  (char *) ZYNQ_READY_CMD, sizeof(ZYNQ_READY_CMD)) < 1 ) {
-                    sm_ret = SM_UDP_INVALID_HOST_ADDR;
-                    state = SM_TERMINATE;
-                }
-                else {
-                    state = SM_WAIT_FOR_HOST_START_CMD;
-                    cout << endl << "Waiting for Host to start data collection..." << endl << endl;
-                }
+                sm = send_ready_state_to_host(sm);
                 break;
 
             case SM_WAIT_FOR_HOST_START_CMD:
-
-                memset(recvdCMD, 0, CMD_MAX_STRING_SIZE);
-                udp_ret = udp_nonblocking_receive(&udp_host, recvdCMD, CMD_MAX_STRING_SIZE);
-
-                if (udp_ret > 0) {
-                    if (strcmp(recvdCMD, HOST_START_DATA_COLLECTION) == 0) {
-                        cout << "Received Message: " <<  recvdCMD << endl;
-                        state = SM_START_DATA_COLLECTION;
-                    }
-                    else if (strcmp(recvdCMD, HOST_TERMINATE_SERVER) == 0) {
-                        cout << "Received Message: " <<  recvdCMD << endl;
-                        sm_ret = SM_SUCCESS;
-                        state = SM_TERMINATE;
-                    }
-                    else {
-                        sm_ret = SM_OUT_OF_SYNC;
-                        last_state = state;
-                        state = SM_TERMINATE;
-                    }
-                }
-                else if (udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-                    state = SM_WAIT_FOR_HOST_START_CMD;
-                }
-                else {
-                    sm_ret = SM_UDP_ERROR;
-                    last_state = state;
-                    state = SM_TERMINATE;
-                }
+                sm = wait_for_host_start_cmd(sm);
                 break;
 
             case SM_START_DATA_COLLECTION:
-
-                stop_data_collection_flag = false;
-                start_time = std::chrono::high_resolution_clock::now();
-                state = SM_START_CONSUMER_THREAD;
+                sm = start_data_collection(sm);
                 break;
 
             case SM_START_CONSUMER_THREAD:
-
-                // Starting Consumer Thread: sends packets to host
-                if (pthread_create(&consumer_t, nullptr, consume_data, &db) != 0) {
-                    std::cerr << "Error creating consumer thread" << std::endl;
-                    return 1;
-                }
-
-                pthread_detach(consumer_t);
-
-                state = SM_PRODUCE_DATA;
+                sm = start_consumer_thread(sm, &consumer_t);
                 break;
 
             case SM_PRODUCE_DATA:
-
-                if ( !load_data_packet(port, board, db.double_buffer[db.prod_buf], num_encoders, num_motors)) {
-                    cout << "[ERROR]load data buffer fail" << endl;
-                    return false;
-                }
-
-                while (db.cons_busy) {}
-
-                // Switch to the next buffer
-                db.prod_buf = (db.prod_buf + 1) % 2;
-
-                state = SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD;
+                sm = produce_data(sm);
                 break;
 
             case SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD:
-
-                udp_ret = udp_nonblocking_receive(&udp_host, recvdCMD, CMD_MAX_STRING_SIZE);
-
-                if (udp_ret > 0) {
-                    if (strcmp(recvdCMD, HOST_STOP_DATA_COLLECTION) == 0) {
-                        cout << "Message from Host: STOP DATA COLLECTION" << endl;
-
-                        stop_data_collection_flag = true;
-
-                        pthread_join(consumer_t, nullptr);
-
-                        cout << "------------------------------------------------" << endl;
-                        cout << "UDP DATA PACKETS SENT TO HOST: " << data_packet_count << endl;
-                        cout << "SAMPLES SENT TO HOST: " << sample_count << endl;
-                        cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
-                        cout << "------------------------------------------------" << endl << endl;
-
-                        emio_read_error_counter = 0; 
-                        data_packet_count = 0;
-                        sample_count = 0;
-
-                        state = SM_WAIT_FOR_HOST_START_CMD;
-                        cout << "Waiting for command from host..." << endl;
-                        
-                    } else {
-                        sm_ret = SM_OUT_OF_SYNC;
-                        last_state = state;
-                        state = SM_TERMINATE;
-                    }
-                } else if (udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE){
-                    state = SM_PRODUCE_DATA;
-                } else {
-                    sm_ret = SM_UDP_ERROR;
-                    last_state = state;
-                    state = SM_TERMINATE;
-                }
+                sm = check_for_stop_data_collection(sm, consumer_t);     
                 break;
 
             case SM_TERMINATE:
-                if (sm_ret != SM_SUCCESS) {
-                    // Print out error messages
-                    cout << "[ERROR] STATEMACHINE TERMINATING" << endl;
-
-                    cout << "At STATE " << last_state << " ";
-
-                    switch (sm_ret){
-                        
-                        case SM_OUT_OF_SYNC:
-                            cout << "Zynq of sync with Host. Received unexpected command: " << recvdCMD << endl;
-                            break;
-                        case SM_UDP_ERROR:
-                            cout << "Udp ERROR. Make sure host program is running." << endl;
-                            break;
-                        case SM_UDP_INVALID_HOST_ADDR:
-                            cout << "Udp ERROR. Invalid Host Address format" << endl;
-                            break;
-                    }
-
-                } else {
-                    cout << "STATE MACHINE SUCCESS !" << endl;
-                }
-
-                cout << endl << ZYNQ_TERMINATATION_SUCCESSFUL << endl;
-
-                udp_transmit(&udp_host,  (void*) ZYNQ_TERMINATATION_SUCCESSFUL, sizeof(ZYNQ_TERMINATATION_SUCCESSFUL));
-
-                close(udp_host.socket);
-                state = SM_EXIT;
+                sm = terminate_data_collection(sm);
                 break;
         }
     }
-    return sm_ret;
+    return sm.ret;
 }
 
 
@@ -693,19 +765,19 @@ static int dataCollectionStateMachine(BasePort *port, AmpIO *board)
 int main()
 {
     string portDescription = BasePort::DefaultPort();
-    BasePort *Port = PortFactory(portDescription.c_str());
+    dvrk_controller.Port = PortFactory(portDescription.c_str());
 
-    if (!Port->IsOK()) {
-        std::cerr << "Failed to initialize " << Port->GetPortTypeString() << std::endl;
+    if (!dvrk_controller.Port->IsOK()) {
+        std::cerr << "Failed to initialize " << dvrk_controller.Port->GetPortTypeString() << std::endl;
         return -1;
     }
 
-    if (Port->GetNumOfNodes() == 0) {
+    if (dvrk_controller.Port->GetNumOfNodes() == 0) {
         std::cerr << "Failed to find any boards" << std::endl;
         return -1;
     }
 
-    ZynqEmioPort *EmioPort = dynamic_cast<ZynqEmioPort *>(Port);
+    ZynqEmioPort *EmioPort = dynamic_cast<ZynqEmioPort *>(dvrk_controller.Port);
     if (EmioPort) {
         cout << "Verbose: " << EmioPort->GetVerbose() << std::endl;
         // EmioPort->SetVerbose(true);
@@ -715,9 +787,9 @@ int main()
       cout << "[warning] failed to dynamic cast to ZynqEmioPort" << endl;
     }
 
-    AmpIO *Board = new AmpIO(Port->GetBoardId(0));
+    dvrk_controller.Board = new AmpIO(dvrk_controller.Port->GetBoardId(0));
 
-    Port->AddBoard(Board);
+    dvrk_controller.Port->AddBoard(dvrk_controller.Board);
 
     bool isOK = initiate_socket_connection(udp_host.socket);
 
@@ -726,7 +798,7 @@ int main()
         return -1;
     }
 
-    dataCollectionStateMachine(Port, Board);
+    dataCollectionStateMachine();
 
     return 0;
 }
