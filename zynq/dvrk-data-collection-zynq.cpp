@@ -106,6 +106,7 @@ int32_t emio_read_error_counter = 0;
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
+float last_timestamp = 0;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -359,8 +360,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     // CAPTURE DATA 
     for (int i = 0; i < samples_per_packet; i++) {
 
-        while(!dvrk_controller.Port->ReadAllBoards()) {
+        if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
+            return false;
         }
 
         if (!dvrk_controller.Board->ValidRead()) {
@@ -371,6 +373,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 1: timestamp
         end_time = std::chrono::high_resolution_clock::now();
         float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
+        last_timestamp = time_elapsed;
 
         data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
 
@@ -623,6 +626,8 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "UDP DATA PACKETS SENT TO HOST: " << data_packet_count << endl;
             cout << "SAMPLES SENT TO HOST: " << sample_count << endl;
             cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
+            cout << "TIME ELAPSED: " << last_timestamp << endl;
+            cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
             cout << "------------------------------------------------" << endl << endl;
 
             emio_read_error_counter = 0; 
@@ -715,7 +720,6 @@ static int dataCollectionStateMachine()
     while (sm.state != SM_EXIT) {
 
         switch (sm.state) {
-
             case SM_WAIT_FOR_HOST_HANDSHAKE:
                 sm = wait_for_host_handshake(sm);
                 break;
