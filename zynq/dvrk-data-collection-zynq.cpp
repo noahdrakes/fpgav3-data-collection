@@ -142,6 +142,12 @@ enum UDP_RETURN_CODES {
     UDP_NON_UDP_DATA_IS_AVAILABLE = -5
 };
 
+enum FS_RETURN_CODES  {
+    FS_SUCCESS,
+    FS_NO_DATA_AVAILABLE,
+    FS_FAIL
+};
+
 // Socket Data struct
 typedef struct {
     int socket;
@@ -283,11 +289,11 @@ int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
 
 void convert_force_torque(int32_t raw_counts[6], float (&forces)[6]) {
     // Scaling Factors from Calibration Config
-    const float scaling_factors[6] = {6104, 6104, 6104, 153, 153, 153};
+    // const float scaling_factors[6] = {6104, 6104, 6104, 153, 153, 153};
 
     // Convert raw counts to physical values
     for (int i = 0; i < 6; i++) {
-        forces[i] = static_cast<float>(raw_counts[i]) / scaling_factors[i];
+        forces[i] = static_cast<float>(raw_counts[i]) / 1000000; // divide by Counts per Force/Torque specified in the force sensor web
     }
 }
 
@@ -305,10 +311,9 @@ static int udp_transmit(UDP_Info *udp_info, void * data, int size)
 
 
 // Function to return force-torque sample (fully non-blocking)
-bool return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
+FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
     unsigned char response[36]; /* The raw response data received from the Net F/T. */
 
-    
     int32_t force_sample[6];
 
     // Send request
@@ -319,7 +324,7 @@ bool return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
 
     // If no data is available, return false and do nothing
     if (received_bytes == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || received_bytes <= 0) {
-        return false;
+        return FS_NO_DATA_AVAILABLE;
     }
 
     // Parse response
@@ -327,13 +332,20 @@ bool return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
     resp.ft_sequence = ntohl(*(uint32_t*)&response[4]);
     resp.status = ntohl(*(uint32_t*)&response[8]);
 
+    // printf("resp.status: %llu\n", resp.status);
+
+    if (resp.status != 0x00000000){
+        printf("[ERROR] Unable to interface with force sensor. Check FS initialization code\n");
+        return FS_FAIL;
+    }
+
     for (int i = 0; i < 6; i++) {
         force_sample[i] = ntohl(*(int32_t*)&response[12 + i * 4]);
     }
 
     convert_force_torque(force_sample, real_force_sample);
 
-    return true;
+    return FS_SUCCESS;
 }
 
 
@@ -505,11 +517,16 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
          // DATA 6: force/torque readings
         float force_sensor[6];
+
+        int fs_ret = return_force_torque_sample_3dof(force_sensor);
          
-        if(!return_force_torque_sample_3dof(force_sensor)){
+        if(fs_ret == FS_NO_DATA_AVAILABLE){
             memcpy(force_sensor, last_fs_sample, sizeof(last_fs_sample));
-        } else {
+        } else if (fs_ret == FS_SUCCESS) {
             memcpy( last_fs_sample, force_sensor, sizeof(last_fs_sample));
+        } else if (fs_ret == FS_FAIL){
+            cout << "[ERROR] Failed to grab darta from force sensor" << endl;
+            return false;
         }
  
          for (int i = 0; i < 6; i++){
@@ -839,6 +856,14 @@ static int dataCollectionStateMachine()
 
     cout << "fs" << endl;
     init_force_sensor_connection();
+
+    float sample[6];
+
+    if (return_force_torque_sample_3dof(sample) == FS_FAIL){
+        cout << "[ERROR] - Force sensor reading incorrect data. Check Initialization" << endl;
+    } else {
+        cout << "Initializing Force Sensor Success..." << endl;
+    }
 
 
     bool isOK = initiate_socket_connection();
