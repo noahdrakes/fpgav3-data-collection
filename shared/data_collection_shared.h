@@ -24,6 +24,7 @@ http://www.cisst.org/cisst/license.txt.
 
 const unsigned int MAX_NUM_ENCODERS = 8;
 const unsigned int MAX_NUM_MOTORS = 10;
+const unsigned int MAX_NUM_FT_READINGS = 6;
 
 // Default MTU=1500 (does not count 18 bytes for Ethernet frame header and CRC)
 const unsigned int MTU_DEFAULT = 1500;
@@ -62,6 +63,7 @@ enum StateMachineReturnCodes {
     SM_OUT_OF_SYNC,
     SM_UDP_INVALID_HOST_ADDR,
     SM_FAILED_TO_CREATE_THREAD,
+    SM_FORCE_SENSOR_FAIL,
 };
 
 // Commands Sent between Host and Zynq

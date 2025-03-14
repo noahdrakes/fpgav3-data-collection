@@ -55,6 +55,7 @@ class DataCollection {
             float encoder_velocity[MAX_NUM_ENCODERS];
             uint16_t motor_current[MAX_NUM_MOTORS];
             uint16_t motor_status[MAX_NUM_MOTORS];
+            float force_torque[MAX_NUM_FT_READINGS];
             uint32_t digital_io;
             uint32_t mio_pins;
         } proc_sample;
