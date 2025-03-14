@@ -248,11 +248,11 @@ uint8_t returnMIOPins(){
 // int udp_nonblocking_recieve()
 
 // checks if data is available from udp buffer (for noblocking udp recv)
-int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
+int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
 {
     fd_set readfds;
     FD_ZERO(&readfds);
-    FD_SET(udp_host->socket, &readfds);
+    FD_SET(udp_info->socket, &readfds);
 
     int ret_code;
 
@@ -262,7 +262,7 @@ int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
     timeout.tv_sec = 0;   
     timeout.tv_usec = 0;    
 
-    int max_fd = udp_host->socket + 1;
+    int max_fd = udp_info->socket + 1;
     int activity = select(max_fd, &readfds, NULL, NULL, &timeout);
 
     if (activity < 0) {
@@ -270,8 +270,8 @@ int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
     } else if (activity == 0) {
         return UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT;
     } else {
-        if (FD_ISSET(udp_host->socket, &readfds)) {
-            ret_code = recvfrom(udp_host->socket, data, size, 0, (struct sockaddr *)&udp_host->Addr, &udp_host->AddrLen);
+        if (FD_ISSET(udp_info->socket, &readfds)) {
+            ret_code = recvfrom(udp_info->socket, data, size, 0, (struct sockaddr *)&udp_info->Addr, &udp_info->AddrLen);
 
             if (ret_code == 0) {
                 return UDP_CONNECTION_CLOSED_ERROR;
@@ -314,10 +314,7 @@ static int udp_transmit(UDP_Info *udp_info, void * data, int size)
 FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
     unsigned char response[36]; /* The raw response data received from the Net F/T. */
 
-    int32_t force_sample[6];
-
-    // Send request
-    udp_transmit(&udp_fs, request, 8);
+    int32_t force_sample[6] = {0,0,0,0,0,0};
 
     // Non-blocking receive
     int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
@@ -345,6 +342,8 @@ FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
 
     convert_force_torque(force_sample, real_force_sample);
 
+    
+    // memcpy(real_force_sample, force_sample, sizeof(force_sample));
     return FS_SUCCESS;
 }
 
@@ -352,9 +351,7 @@ FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
 
 // Initialize force sensor connection
 void init_force_sensor_connection() {
-    int PORT = 49152;      /* Port the Net F/T always uses */
-    int COMMAND = 2;       /* Command code 2 starts streaming */
-    int NUM_SAMPLES = 1;   /* Will send 1 sample before stopping */
+    int PORT = 49152; 
 
     udp_fs.socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fs.socket == -1) {
@@ -364,10 +361,6 @@ void init_force_sensor_connection() {
 
     // Set socket to non-blocking mode
     // fcntl(udp_fs.socket, F_SETFL, O_NONBLOCK);
-
-    *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
-    *(uint16_t*)&request[2] = htons(COMMAND); /* Command code */
-    *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
 
     char ip_address[] = "169.254.10.100";
 
@@ -383,6 +376,47 @@ void init_force_sensor_connection() {
     memcpy(&udp_fs.Addr.sin_addr, he->h_addr_list[0], he->h_length);
     udp_fs.AddrLen = sizeof(udp_fs.Addr);
 }
+
+void force_sensor_stop_streaming(){
+    *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
+    *(uint16_t*)&request[2] = htons(0); /* Command code */
+    // *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
+    *(uint32_t*)&request[4] = htonl(0);
+
+    udp_transmit(&udp_fs, request, 8);
+}
+
+int force_sensor_start_streaming(){
+    unsigned char response[36]; /* The raw response data received from the Net F/T. */
+    int COMMAND = 2;
+    int NUM_SAMPLES = 0;
+
+    *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
+    *(uint16_t*)&request[2] = htons(COMMAND); /* Command code */
+    *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
+    // *(uint32_t*)&request[4] = htonl(0);
+
+    udp_transmit(&udp_fs, request, 8);
+
+    int received_bytes = 0;
+
+    while(received_bytes <= 0){
+        received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
+    }
+    
+    // Parse response
+    resp.rdt_sequence = ntohl(*(uint32_t*)&response[0]);
+    resp.ft_sequence = ntohl(*(uint32_t*)&response[4]);
+    resp.status = ntohl(*(uint32_t*)&response[8]);
+
+    if (resp.status != 0x00000000){
+        printf("[ERROR] Unable to interface with force sensor. Check FS initialization code\n");
+        return FS_FAIL;
+    }
+
+    return FS_SUCCESS;
+}
+
 
 
 
@@ -758,6 +792,7 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             stop_data_collection_flag = true;
 
             pthread_join(consumer_t, nullptr);
+            force_sensor_stop_streaming();
 
             cout << "------------------------------------------------" << endl;
             cout << "UDP DATA PACKETS SENT TO HOST: " << data_packet_count << endl;
@@ -794,6 +829,15 @@ SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
     start_time = std::chrono::high_resolution_clock::now();
     sm.state = SM_START_CONSUMER_THREAD;
+
+    int fs_ok = force_sensor_start_streaming();
+
+    if (fs_ok == FS_FAIL){
+        cout << "[ERROR] Fail to start force sensor streaming" << endl;
+        sm.ret = SM_BOARD_ERROR;
+        sm.state = SM_EXIT;
+    }
+
     return sm;
 }
 
@@ -857,6 +901,7 @@ static int dataCollectionStateMachine()
     cout << "fs" << endl;
     init_force_sensor_connection();
 
+    
     float sample[6];
 
     if (return_force_torque_sample_3dof(sample) == FS_FAIL){
@@ -875,7 +920,7 @@ static int dataCollectionStateMachine()
 
     float example[6];
 
-    while(!return_force_torque_sample_3dof(example));
+    // while(!return_force_torque_sample_3dof(example));
 
     for (int i = 0; i < 6; i++){
         cout << example[i] << endl;
@@ -895,6 +940,7 @@ static int dataCollectionStateMachine()
         switch (sm.state) {
             case SM_WAIT_FOR_HOST_HANDSHAKE:
                 sm = wait_for_host_handshake(sm);
+                // printf("handshake\n");
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:
