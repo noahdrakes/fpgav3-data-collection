@@ -109,7 +109,10 @@ int32_t emio_read_error_counter = 0;
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
+std::chrono::time_point<std::chrono::high_resolution_clock> d_start_time;
+std::chrono::time_point<std::chrono::high_resolution_clock> d_end_time;
 float last_timestamp = 0;
+float fs_time_elapsed = 0;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -361,6 +364,13 @@ void init_force_sensor_connection() {
 
     // Set socket to non-blocking mode
     // fcntl(udp_fs.socket, F_SETFL, O_NONBLOCK);
+    // ✅ Enable Non-Blocking Mode
+    int flags = fcntl(udp_fs.socket, F_GETFL, 0);
+    if (flags == -1 || fcntl(udp_fs.socket, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("[ERROR] Failed to set non-blocking mode");
+        exit(1);
+    }
+
 
     char ip_address[] = "169.254.10.100";
 
@@ -423,7 +433,7 @@ int force_sensor_start_streaming(){
 static bool initiate_socket_connection()
 {
     int port = 12345;
-    std::cout << "\nInitiating Socket Connection on port " << port << "...\n";
+    std::cout << "\nInitiating UDP Socket Connection on port " << port << "...\n";
 
     udp_host.AddrLen = sizeof(udp_host.Addr);
 
@@ -431,6 +441,21 @@ static bool initiate_socket_connection()
     udp_host.socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_host.socket < 0) {
         std::cerr << "[UDP ERROR] Failed to create socket\n";
+        return false;
+    }
+
+    int optval = 1;
+    if (setsockopt(udp_host.socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        std::cerr << "[UDP ERROR] Failed to set SO_REUSEADDR\n";
+        close(udp_host.socket);
+        return false;
+    }
+
+    //  Set socket to non-blocking mode
+    int flags = fcntl(udp_host.socket, F_GETFL, 0);
+    if (flags == -1 || fcntl(udp_host.socket, F_SETFL, flags | O_NONBLOCK) == -1) {
+        std::cerr << "[UDP ERROR] Failed to set non-blocking mode\n";
+        close(udp_host.socket);
         return false;
     }
 
@@ -447,9 +472,10 @@ static bool initiate_socket_connection()
         return false;
     }
 
-    std::cout << "UDP Listening Socket Initialized on Port " << port << "!\n";
+    std::cout << " UDP Listening Socket Initialized on Port " << port << "!\n";
     return true;
 }
+
 
 // calculate the size of a sample in quadlets
 static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_motors)
@@ -552,20 +578,36 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
          // DATA 6: force/torque readings
         float force_sensor[6];
 
+        // d_start_time = std::chrono::high_resolution_clock::now();
         int fs_ret = return_force_torque_sample_3dof(force_sensor);
+        // d_end_time = std::chrono::high_resolution_clock::now();
+
+        // fs_time_elapsed += convert_chrono_duration_to_float(d_start_time, d_end_time);
          
         if(fs_ret == FS_NO_DATA_AVAILABLE){
-            memcpy(force_sensor, last_fs_sample, sizeof(last_fs_sample));
+            // memcpy(force_sensor, last_fs_sample, sizeof(last_fs_sample));
+
+            for (int i = 0; i < 6; i++){
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&last_fs_sample[i]);
+           }
         } else if (fs_ret == FS_SUCCESS) {
             memcpy( last_fs_sample, force_sensor, sizeof(last_fs_sample));
+
+            // for (int i = 0; i < 6; i++){
+            //     last_fs_sample[i] = force_sensor[i];
+            // }
+
+            for (int i = 0; i < 6; i++){
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
+           }
         } else if (fs_ret == FS_FAIL){
             cout << "[ERROR] Failed to grab darta from force sensor" << endl;
             return false;
         }
  
-         for (int i = 0; i < 6; i++){
-             data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
-        }
+        // for (int i = 0; i < 6; i++){
+        //      data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
+        // }
 
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
@@ -800,6 +842,7 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
             cout << "TIME ELAPSED: " << last_timestamp << endl;
             cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
+            cout << "AVERAGE FORCE SENSOR reading time: " << fs_time_elapsed/sample_count << endl;
             cout << "------------------------------------------------" << endl << endl;
 
             emio_read_error_counter = 0; 
@@ -830,6 +873,7 @@ SM start_data_collection(SM sm){
     start_time = std::chrono::high_resolution_clock::now();
     sm.state = SM_START_CONSUMER_THREAD;
 
+    // force_sensor_stop_streaming();
     int fs_ok = force_sensor_start_streaming();
 
     if (fs_ok == FS_FAIL){
