@@ -492,9 +492,9 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
     // Force Torque Readings -> 6 * 32 bits                                         [1 quadlet * 6 Fore/Torque Readings]                 
     if (use_ps_io_flag){
-        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors) + 6);
+        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
     } else {
-        return (1 + (2*(num_encoders)) + (num_motors) + 6);
+        return (1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
     }
     
 }

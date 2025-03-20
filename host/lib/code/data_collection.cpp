@@ -213,11 +213,9 @@ void DataCollection::write_csv_headers() {
 
     for (int i = 1; i <= FORCE_SAMPLE_NUM_DEGREES; i++) {
 
-        if (i <= 3){
+        if (i <= FORCE_SAMPLE_NUM_DEGREES){
             myFile << "FORCE_" << i;
-        } else {
-            myFile << "TORQUE_" << i;
-        }
+        } 
         
         if (i < FORCE_SAMPLE_NUM_DEGREES) myFile << ",";
 
