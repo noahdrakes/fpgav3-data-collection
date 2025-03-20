@@ -24,7 +24,7 @@ http://www.cisst.org/cisst/license.txt.
 
 const unsigned int MAX_NUM_ENCODERS = 8;
 const unsigned int MAX_NUM_MOTORS = 10;
-const unsigned int MAX_NUM_FT_READINGS = 6;
+// const unsigned int MAX_NUM_FT_READINGS = 6;
 
 // Default MTU=1500 (does not count 18 bytes for Ethernet frame header and CRC)
 const unsigned int MTU_DEFAULT = 1500;
@@ -40,6 +40,8 @@ const unsigned int UDP_MAX_QUADLET_PER_PACKET = UDP_REAL_MTU/4;
 
 // Arbitrary, used as a const for consistency. Can be changed later
 const unsigned int CMD_MAX_STRING_SIZE = 100;
+
+const unsigned int FORCE_SAMPLE_NUM_DEGREES = 3;
 
 // Data collection meta-data
 struct DataCollectionMeta {

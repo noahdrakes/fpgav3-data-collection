@@ -163,11 +163,11 @@ typedef struct {
 UDP_Info udp_host, udp_fs;
 
 // FORCE SENSOR 
+
 typedef struct response_struct {
 	uint64_t rdt_sequence;
 	uint64_t ft_sequence;
 	uint64_t status;
-	int32_t FTData[6];
 } RESPONSE;
 
 // struct sockaddr_in addr;	/* Address of Net F/T. */
@@ -177,7 +177,7 @@ struct hostent *he;			/* Host entry for Net F/T. */
 unsigned char request[8];			/* The request data sent to the Net F/T. */
 RESPONSE resp;				/* The structured response received from the Net F/T. */
 
-float last_fs_sample[6] = {0,0,0,0,0,0};
+float last_fs_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
 
 
 static int mio_mmap_init()
@@ -290,12 +290,12 @@ int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
     }
 }
 
-void convert_force_torque(int32_t raw_counts[6], float (&forces)[6]) {
+void convert_force_torque(int32_t raw_counts[FORCE_SAMPLE_NUM_DEGREES], float (&forces)[FORCE_SAMPLE_NUM_DEGREES]) {
     // Scaling Factors from Calibration Config
     // const float scaling_factors[6] = {6104, 6104, 6104, 153, 153, 153};
 
     // Convert raw counts to physical values
-    for (int i = 0; i < 6; i++) {
+    for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
         forces[i] = static_cast<float>(raw_counts[i]) / 1000000; // divide by Counts per Force/Torque specified in the force sensor web
     }
 }
@@ -314,10 +314,10 @@ static int udp_transmit(UDP_Info *udp_info, void * data, int size)
 
 
 // Function to return force-torque sample (fully non-blocking)
-FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
+FS_RETURN_CODES return_force_sample_3dof(float (&real_force_sample)[FORCE_SAMPLE_NUM_DEGREES]) {
     unsigned char response[36]; /* The raw response data received from the Net F/T. */
 
-    int32_t force_sample[6] = {0,0,0,0,0,0};
+    int32_t force_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
 
     // Non-blocking receive
     int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
@@ -339,7 +339,7 @@ FS_RETURN_CODES return_force_torque_sample_3dof(float (&real_force_sample)[6]) {
         return FS_FAIL;
     }
 
-    for (int i = 0; i < 6; i++) {
+    for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
         force_sample[i] = ntohl(*(int32_t*)&response[12 + i * 4]);
     }
 
@@ -575,29 +575,24 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = (uint32_t)(((motor_status & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
         }
 
-         // DATA 6: force/torque readings
-        float force_sensor[6];
+         // DATA 6: force readings
+        float force_sensor[FORCE_SAMPLE_NUM_DEGREES];
 
         // d_start_time = std::chrono::high_resolution_clock::now();
-        int fs_ret = return_force_torque_sample_3dof(force_sensor);
+        int fs_ret = return_force_sample_3dof(force_sensor);
         // d_end_time = std::chrono::high_resolution_clock::now();
 
         // fs_time_elapsed += convert_chrono_duration_to_float(d_start_time, d_end_time);
          
         if(fs_ret == FS_NO_DATA_AVAILABLE){
-            // memcpy(force_sensor, last_fs_sample, sizeof(last_fs_sample));
 
-            for (int i = 0; i < 6; i++){
+            for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++){
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&last_fs_sample[i]);
            }
         } else if (fs_ret == FS_SUCCESS) {
             memcpy( last_fs_sample, force_sensor, sizeof(last_fs_sample));
 
-            // for (int i = 0; i < 6; i++){
-            //     last_fs_sample[i] = force_sensor[i];
-            // }
-
-            for (int i = 0; i < 6; i++){
+            for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++){
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
            }
         } else if (fs_ret == FS_FAIL){
@@ -605,9 +600,6 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             return false;
         }
  
-        // for (int i = 0; i < 6; i++){
-        //      data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
-        // }
 
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
@@ -946,9 +938,9 @@ static int dataCollectionStateMachine()
     init_force_sensor_connection();
 
     
-    float sample[6];
+    float sample[FORCE_SAMPLE_NUM_DEGREES];
 
-    if (return_force_torque_sample_3dof(sample) == FS_FAIL){
+    if (return_force_sample_3dof(sample) == FS_FAIL){
         cout << "[ERROR] - Force sensor reading incorrect data. Check Initialization" << endl;
     } else {
         cout << "Initializing Force Sensor Success..." << endl;

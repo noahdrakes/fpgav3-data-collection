@@ -110,7 +110,7 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
         idx++;
     }
 
-    for (int i = 0; i < MAX_NUM_FT_READINGS; i++) {
+    for (int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
         proc_sample.force_torque[i] = *reinterpret_cast<float *> (&data_packet[idx++]);
     }
 
@@ -211,7 +211,7 @@ void DataCollection::write_csv_headers() {
         // if (i < dc_meta.num_motors) myFile << ",";
     }
 
-    for (int i = 1; i <= MAX_NUM_FT_READINGS; i++) {
+    for (int i = 1; i <= FORCE_SAMPLE_NUM_DEGREES; i++) {
 
         if (i <= 3){
             myFile << "FORCE_" << i;
@@ -219,7 +219,7 @@ void DataCollection::write_csv_headers() {
             myFile << "TORQUE_" << i;
         }
         
-        if (i < MAX_NUM_FT_READINGS) myFile << ",";
+        if (i < FORCE_SAMPLE_NUM_DEGREES) myFile << ",";
 
         // myFile << ",";
     }
@@ -254,12 +254,12 @@ void DataCollection::process_and_write_data() {
 
         // cout << "before writing torque forces" << endl;
 
-        for (int j = 0; j < MAX_NUM_FT_READINGS; j++){
+        for (int j = 0; j < FORCE_SAMPLE_NUM_DEGREES; j++){
 
             // cout << j << endl;
             myFile << proc_sample.force_torque[j];
 
-            if (j < MAX_NUM_FT_READINGS - 1) {
+            if (j < FORCE_SAMPLE_NUM_DEGREES - 1) {
                 myFile << ",";
             }
 
