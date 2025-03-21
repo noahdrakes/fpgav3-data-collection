@@ -576,7 +576,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
 
             uint32_t raw_cmd_current;
-            Port->ReadQuadlet(Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
+            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
             // int16_t raw_cmd_current_16_bit = static_cast<int16_t>(raw_cmd_current);
             // uint16_t cmd_current_casted = *reinterpret_cast<uint16_t *>(&raw_cmd_current_16_bit);
 
