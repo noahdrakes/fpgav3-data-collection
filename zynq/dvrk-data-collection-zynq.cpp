@@ -178,6 +178,9 @@ unsigned char request[8];			/* The request data sent to the Net F/T. */
 RESPONSE resp;				/* The structured response received from the Net F/T. */
 
 float last_fs_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
+float FS_X_BIAS = 0;
+float FS_Y_BIAS = 0;
+float FS_Z_BIAS = 0;
 
 
 static int mio_mmap_init()
@@ -428,6 +431,29 @@ int force_sensor_start_streaming(){
 }
 
 
+void force_sensor_update_bias_values(){
+
+    float real_force_sample[3] = {0,0,0};
+
+    force_sensor_start_streaming();
+
+    for (int i = 0; i < 1000; i++){
+        return_force_sample_3dof(real_force_sample);
+        FS_X_BIAS += real_force_sample[0];
+        FS_Y_BIAS += real_force_sample[1];
+        FS_Z_BIAS += real_force_sample[2];
+    }
+
+    FS_X_BIAS /= (float)1000;
+    FS_Y_BIAS /= (float)1000;
+    FS_Z_BIAS /= (float)1000;
+
+    cout << "FORCE SENSOR BIAS VALUES" << endl;
+    cout << "X_BIAS: " << FS_X_BIAS << ", Y_BIAS: " << FS_Y_BIAS << ", Z_BIAS: " << FS_Z_BIAS << endl;
+
+    force_sensor_stop_streaming();
+}
+
 
 
 static bool initiate_socket_connection()
@@ -588,7 +614,11 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         // d_start_time = std::chrono::high_resolution_clock::now();
         int fs_ret = return_force_sample_3dof(force_sensor);
-        // d_end_time = std::chrono::high_resolution_clock::now();
+
+        force_sensor[0] -= FS_X_BIAS;
+        force_sensor[1] -= FS_Y_BIAS;
+        force_sensor[2] -= FS_Z_BIAS;
+                // d_end_time = std::chrono::high_resolution_clock::now();
 
         // fs_time_elapsed += convert_chrono_duration_to_float(d_start_time, d_end_time);
          
@@ -942,10 +972,10 @@ static int dataCollectionStateMachine()
         sm.ret = SM_PS_IO_FAIL;
     }
 
-    cout << "fs" << endl;
+    cout << "Initializing_force_sensor..." << endl;
     init_force_sensor_connection();
 
-    
+    force_sensor_start_streaming();
     float sample[FORCE_SAMPLE_NUM_DEGREES];
 
     if (return_force_sample_3dof(sample) == FS_FAIL){
@@ -953,6 +983,9 @@ static int dataCollectionStateMachine()
     } else {
         cout << "Initializing Force Sensor Success..." << endl;
     }
+    force_sensor_stop_streaming();
+
+    force_sensor_update_bias_values();
 
 
     bool isOK = initiate_socket_connection();
@@ -962,20 +995,6 @@ static int dataCollectionStateMachine()
         return -1;
     }
 
-    float example[6];
-
-    // while(!return_force_torque_sample_3dof(example));
-
-    for (int i = 0; i < 6; i++){
-        cout << example[i] << endl;
-    }
-    
-
-
-
-    if (example[0] == 0){
-        cout << "error" << endl;
-    }
 
     sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
 
