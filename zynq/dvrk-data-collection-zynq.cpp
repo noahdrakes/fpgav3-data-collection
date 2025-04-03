@@ -27,6 +27,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <atomic>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <algorithm>
 
 
 // mmap mio pins
@@ -113,6 +114,20 @@ std::chrono::time_point<std::chrono::high_resolution_clock> d_start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> d_end_time;
 float last_timestamp = 0;
 float fs_time_elapsed = 0;
+
+std::chrono::time_point<std::chrono::high_resolution_clock> overhead;
+
+std::chrono::time_point<std::chrono::high_resolution_clock> start_overhead;
+std::chrono::time_point<std::chrono::high_resolution_clock> end_overhead;
+float overhead_time = 0;
+
+float average_transmit_time = 0;
+float average_consumer_wait_time = 0;
+double average_produce_time = 0;
+double average_producer_wait_time = 0;
+int total_transmits = 0;
+vector<float> udp_max_transmit_wait_times;
+
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -678,17 +693,34 @@ void *consume_data(void *arg)
 {
     Double_Buffer_Info* db = (Double_Buffer_Info*)arg;
 
+    float transmit_time_sum = 0;
+
     while (!stop_data_collection_flag) {
 
         if (db->prod_buf != db->cons_buf) {
             
+            auto start = std::chrono::high_resolution_clock::now();
             db->cons_busy = 1; 
             udp_transmit(&udp_host, db->double_buffer[db->cons_buf], db->buffer_size);
             data_packet_count++;
             db->cons_busy = 0; 
+            auto end = std::chrono::high_resolution_clock::now();
+            total_transmits++;
+
+            udp_max_transmit_wait_times.push_back(convert_chrono_duration_to_float(start,end));
+            std::sort(udp_max_transmit_wait_times.begin(), udp_max_transmit_wait_times.end(), std::greater<float>());
+
+            if (udp_max_transmit_wait_times.size() > 20){
+                udp_max_transmit_wait_times.pop_back();
+            }
+
+            transmit_time_sum += convert_chrono_duration_to_float(start, end);
 
             db->cons_buf = (db->cons_buf + 1) % 2;
         }   
+
+        average_consumer_wait_time = average_consumer_wait_time / (float) total_transmits;
+        average_transmit_time = transmit_time_sum / (float) total_transmits;
     }
 
     return nullptr;
@@ -836,14 +868,22 @@ SM start_consumer_thread( SM sm , pthread_t *consumer_t){
 
 SM produce_data( SM sm ){
 
+    auto start = std::chrono::high_resolution_clock::now();
     if ( !load_data_packet(dvrk_controller, db.double_buffer[db.prod_buf], data_collection_meta.num_encoders, data_collection_meta.num_motors)) {
         cout << "[ERROR]load data buffer fail" << endl;
         sm.state = SM_EXIT;
         sm.ret = SM_BOARD_ERROR;
         return sm;
     }
+    auto end = std::chrono::high_resolution_clock::now();
 
+    average_produce_time += convert_chrono_duration_to_float(start, end);
+
+    start = std::chrono::high_resolution_clock::now();
     while (db.cons_busy) {}
+    end = std::chrono::high_resolution_clock::now();
+
+    average_producer_wait_time += convert_chrono_duration_to_float(start, end);
 
     // Switch to the next buffer
     db.prod_buf = (db.prod_buf + 1) % 2;
@@ -874,6 +914,23 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
             cout << "AVERAGE FORCE SENSOR reading time: " << fs_time_elapsed/sample_count << endl;
             cout << "------------------------------------------------" << endl << endl;
+
+            printf("-- TIMING ANALYSIS --\n");
+            printf("Average Consume-Data Time: %f\n", average_transmit_time);
+            printf("Average Consumer-Wait Time (waiting on producer to switch buffers: ): %f\n", average_consumer_wait_time);
+            printf("Average Produce-Data Time: %.9f\n", average_produce_time);
+            printf("Average Producer Wait Time (waiting on consumer to finish): %.9f\n", average_producer_wait_time);
+            printf("Last 20 Transmit Times: ");
+
+            for (float times : udp_max_transmit_wait_times){
+                printf("%fs\n", times);
+            }
+
+            printf("Total Transmits: %d\n", total_transmits);
+
+            printf("\n-------------------------------------------------------------------\n");
+
+            printf("Average Read Quadlet Time: %f\n", average_produce_time/ ((float) calculate_quadlets_per_packet(dvrk_controller.Board->GetNumEncoders(), dvrk_controller.Board->GetNumMotors())));
 
             emio_read_error_counter = 0; 
             data_packet_count = 0;
