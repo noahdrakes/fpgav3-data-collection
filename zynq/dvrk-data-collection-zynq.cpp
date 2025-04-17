@@ -106,6 +106,11 @@ int32_t emio_read_error_counter = 0;
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
+
+chrono::time_point<std::chrono::high_resolution_clock> sample_start_time;
+chrono::time_point<std::chrono::high_resolution_clock> sample_end_time;
+// uint16_t target_sample_rate = 2000;
+
 float last_timestamp = 0;
 
 // FLAG set when the host terminates data collection
@@ -320,6 +325,9 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     
 }
 
+static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time){
+    return (double)( (1.0/target_sample_rate) - sample_processing_time);
+}
 // calculates the # of samples per packet in quadlets
 static uint16_t calculate_samples_per_packet(uint8_t num_encoders, uint8_t num_motors)
 {
@@ -359,6 +367,8 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
     // CAPTURE DATA 
     for (int i = 0; i < samples_per_packet; i++) {
+
+        sample_start_time = chrono::high_resolution_clock::now();
 
         if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
@@ -400,7 +410,13 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
-        
+
+        sample_end_time = chrono::high_resolution_clock::now();
+
+        double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time);
+        double delay_for_target_sample_rate = calculate_sample_rate_delay(1000, sample_processing_time);
+
+        usleep( (int) (  (delay_for_target_sample_rate * 1000000.0))  );
         sample_count++;
     }
 
