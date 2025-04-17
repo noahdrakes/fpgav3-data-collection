@@ -25,9 +25,6 @@ http://www.cisst.org/cisst/license.txt.
 #include <chrono>
 #include <pthread.h>
 #include <atomic>
-#include <netdb.h>
-#include <arpa/inet.h>
-
 
 // mmap mio pins
 #include <stdio.h>
@@ -109,10 +106,7 @@ int32_t emio_read_error_counter = 0;
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> d_start_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> d_end_time;
 float last_timestamp = 0;
-float fs_time_elapsed = 0;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -145,42 +139,14 @@ enum UDP_RETURN_CODES {
     UDP_NON_UDP_DATA_IS_AVAILABLE = -5
 };
 
-enum FS_RETURN_CODES  {
-    FS_SUCCESS,
-    FS_NO_DATA_AVAILABLE,
-    FS_FAIL
-};
-
 // Socket Data struct
-typedef struct {
+struct UDP_Info {
     int socket;
-    struct sockaddr_in Addr;        // Destination address (used for sending)
+    struct sockaddr_in Addr;
     socklen_t AddrLen;
-    struct sockaddr_in last_sender; // Store last sender dynamically (new field)
-} UDP_Info;
+} udp_host; // this is global bc there will only be one
 
 
-UDP_Info udp_host, udp_fs;
-
-// FORCE SENSOR 
-
-typedef struct response_struct {
-	uint64_t rdt_sequence;
-	uint64_t ft_sequence;
-	uint64_t status;
-} RESPONSE;
-
-// struct sockaddr_in addr;	/* Address of Net F/T. */
-// struct hostent *he;			/* Host entry for Net F/T. */
-struct sockaddr_in addr;	/* Address of Net F/T. */
-struct hostent *he;			/* Host entry for Net F/T. */
-unsigned char request[8];			/* The request data sent to the Net F/T. */
-RESPONSE resp;				/* The structured response received from the Net F/T. */
-
-float last_fs_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
-float FS_X_BIAS = 0;
-float FS_Y_BIAS = 0;
-float FS_Z_BIAS = 0;
 
 
 static int mio_mmap_init()
@@ -251,14 +217,12 @@ uint8_t returnMIOPins(){
     return (gpio_bank1 & MIO_PINS_MSK) >> 2;
 }
 
-// int udp_nonblocking_recieve()
-
 // checks if data is available from udp buffer (for noblocking udp recv)
-int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
+int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
 {
     fd_set readfds;
     FD_ZERO(&readfds);
-    FD_SET(udp_info->socket, &readfds);
+    FD_SET(udp_host->socket, &readfds);
 
     int ret_code;
 
@@ -268,7 +232,7 @@ int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
     timeout.tv_sec = 0;   
     timeout.tv_usec = 0;    
 
-    int max_fd = udp_info->socket + 1;
+    int max_fd = udp_host->socket + 1;
     int activity = select(max_fd, &readfds, NULL, NULL, &timeout);
 
     if (activity < 0) {
@@ -276,8 +240,8 @@ int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
     } else if (activity == 0) {
         return UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT;
     } else {
-        if (FD_ISSET(udp_info->socket, &readfds)) {
-            ret_code = recvfrom(udp_info->socket, data, size, 0, (struct sockaddr *)&udp_info->Addr, &udp_info->AddrLen);
+        if (FD_ISSET(udp_host->socket, &readfds)) {
+            ret_code = recvfrom(udp_host->socket, data, size, 0, (struct sockaddr *)&udp_host->Addr, &udp_host->AddrLen);
 
             if (ret_code == 0) {
                 return UDP_CONNECTION_CLOSED_ERROR;
@@ -293,215 +257,47 @@ int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
     }
 }
 
-void convert_force_torque(int32_t raw_counts[FORCE_SAMPLE_NUM_DEGREES], float (&forces)[FORCE_SAMPLE_NUM_DEGREES]) {
-    // Scaling Factors from Calibration Config
-    // const float scaling_factors[6] = {6104, 6104, 6104, 153, 153, 153};
-
-    // Convert raw counts to physical values
-    for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
-        forces[i] = static_cast<float>(raw_counts[i]) / 1000000; // divide by Counts per Force/Torque specified in the force sensor web
-    }
-}
-
-
 // udp transmit function. wrapper for sendo that abstracts the UDP_Info_struct
-static int udp_transmit(UDP_Info *udp_info, void * data, int size)
+static int udp_transmit(UDP_Info *udp_host, void * data, int size)
 {
 
     if (size > UDP_MAX_PACKET_SIZE) {
         return -1;
     }
 
-    return sendto(udp_info->socket, data, size, 0, (struct sockaddr *)&udp_info->Addr, udp_info->AddrLen);
+    return sendto(udp_host->socket, data, size, 0, (struct sockaddr *)&udp_host->Addr, udp_host->AddrLen);
 }
 
 
-// Function to return force-torque sample (fully non-blocking)
-FS_RETURN_CODES return_force_sample_3dof(float (&real_force_sample)[FORCE_SAMPLE_NUM_DEGREES]) {
-    unsigned char response[36]; /* The raw response data received from the Net F/T. */
-
-    int32_t force_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
-
-    // Non-blocking receive
-    int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
-
-    // If no data is available, return false and do nothing
-    if (received_bytes == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || received_bytes <= 0) {
-        return FS_NO_DATA_AVAILABLE;
-    }
-
-    // Parse response
-    resp.rdt_sequence = ntohl(*(uint32_t*)&response[0]);
-    resp.ft_sequence = ntohl(*(uint32_t*)&response[4]);
-    resp.status = ntohl(*(uint32_t*)&response[8]);
-
-    // printf("resp.status: %llu\n", resp.status);
-
-    if (resp.status != 0x00000000){
-        printf("[ERROR] Unable to interface with force sensor. Check FS initialization code\n");
-        return FS_FAIL;
-    }
-
-    for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
-        force_sample[i] = ntohl(*(int32_t*)&response[12 + i * 4]);
-    }
-
-    convert_force_torque(force_sample, real_force_sample);
-
-    
-    // memcpy(real_force_sample, force_sample, sizeof(force_sample));
-    return FS_SUCCESS;
-}
-
-
-
-// Initialize force sensor connection
-void init_force_sensor_connection() {
-    int PORT = 49152; 
-
-    udp_fs.socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_fs.socket == -1) {
-        perror("ERROR: Socket creation failed");
-        exit(1);
-    }
-
-    // Set socket to non-blocking mode
-    // fcntl(udp_fs.socket, F_SETFL, O_NONBLOCK);
-    // ✅ Enable Non-Blocking Mode
-    int flags = fcntl(udp_fs.socket, F_GETFL, 0);
-    if (flags == -1 || fcntl(udp_fs.socket, F_SETFL, flags | O_NONBLOCK) == -1) {
-        perror("[ERROR] Failed to set non-blocking mode");
-        exit(1);
-    }
-
-
-    char ip_address[] = "169.254.10.100";
-
-    he = gethostbyname(ip_address);
-    if (!he) {
-        perror("ERROR: Unable to resolve hostname");
-        exit(2);
-    }
-
-    memset(&udp_fs.Addr, 0, sizeof(udp_fs.Addr));
-    udp_fs.Addr.sin_family = AF_INET;
-    udp_fs.Addr.sin_port = htons(PORT);
-    memcpy(&udp_fs.Addr.sin_addr, he->h_addr_list[0], he->h_length);
-    udp_fs.AddrLen = sizeof(udp_fs.Addr);
-}
-
-void force_sensor_stop_streaming(){
-    *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
-    *(uint16_t*)&request[2] = htons(0); /* Command code */
-    // *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
-    *(uint32_t*)&request[4] = htonl(0);
-
-    udp_transmit(&udp_fs, request, 8);
-}
-
-int force_sensor_start_streaming(){
-    unsigned char response[36]; /* The raw response data received from the Net F/T. */
-    int COMMAND = 2;
-    int NUM_SAMPLES = 0;
-
-    *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
-    *(uint16_t*)&request[2] = htons(COMMAND); /* Command code */
-    *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
-    // *(uint32_t*)&request[4] = htonl(0);
-
-    udp_transmit(&udp_fs, request, 8);
-
-    int received_bytes = 0;
-
-    while(received_bytes <= 0){
-        received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
-    }
-    
-    // Parse response
-    resp.rdt_sequence = ntohl(*(uint32_t*)&response[0]);
-    resp.ft_sequence = ntohl(*(uint32_t*)&response[4]);
-    resp.status = ntohl(*(uint32_t*)&response[8]);
-
-    if (resp.status != 0x00000000){
-        printf("[ERROR] Unable to interface with force sensor. Check FS initialization code\n");
-        return FS_FAIL;
-    }
-
-    return FS_SUCCESS;
-}
-
-
-void force_sensor_update_bias_values(){
-
-    float real_force_sample[3] = {0,0,0};
-
-    force_sensor_start_streaming();
-
-    for (int i = 0; i < 1000; i++){
-        return_force_sample_3dof(real_force_sample);
-        FS_X_BIAS += real_force_sample[0];
-        FS_Y_BIAS += real_force_sample[1];
-        FS_Z_BIAS += real_force_sample[2];
-    }
-
-    FS_X_BIAS /= (float)1000;
-    FS_Y_BIAS /= (float)1000;
-    FS_Z_BIAS /= (float)1000;
-
-    cout << "FORCE SENSOR BIAS VALUES" << endl;
-    cout << "X_BIAS: " << FS_X_BIAS << ", Y_BIAS: " << FS_Y_BIAS << ", Z_BIAS: " << FS_Z_BIAS << endl;
-
-    force_sensor_stop_streaming();
-}
-
-
-
-static bool initiate_socket_connection()
+static bool initiate_socket_connection(int &host_socket)
 {
-    int port = 12345;
-    std::cout << "\nInitiating UDP Socket Connection on port " << port << "...\n";
+    cout << endl << "Initiating Socket Connection with host..." << endl;
 
     udp_host.AddrLen = sizeof(udp_host.Addr);
 
     // Create a UDP socket
-    udp_host.socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_host.socket < 0) {
-        std::cerr << "[UDP ERROR] Failed to create socket\n";
+    host_socket = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (host_socket < 0) {
+        cerr << "[UDP ERROR] Failed to create socket [" << host_socket << "]" << endl;
         return false;
     }
 
-    int optval = 1;
-    if (setsockopt(udp_host.socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
-        std::cerr << "[UDP ERROR] Failed to set SO_REUSEADDR\n";
-        close(udp_host.socket);
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(12345); 
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(host_socket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+        cerr << "[UDP ERROR] Failed to bind socket" << endl;
+        close(host_socket);
         return false;
     }
 
-    //  Set socket to non-blocking mode
-    int flags = fcntl(udp_host.socket, F_GETFL, 0);
-    if (flags == -1 || fcntl(udp_host.socket, F_SETFL, flags | O_NONBLOCK) == -1) {
-        std::cerr << "[UDP ERROR] Failed to set non-blocking mode\n";
-        close(udp_host.socket);
-        return false;
-    }
-
-    // Set up the server address
-    memset(&udp_host.Addr, 0, sizeof(udp_host.Addr));
-    udp_host.Addr.sin_family = AF_INET;
-    udp_host.Addr.sin_port = htons(port);
-    udp_host.Addr.sin_addr.s_addr = INADDR_ANY; // Listen on all available interfaces
-
-    // Bind the socket to the port
-    if (bind(udp_host.socket, (struct sockaddr *)&udp_host.Addr, sizeof(udp_host.Addr)) < 0) {
-        std::cerr << "[UDP ERROR] Failed to bind socket to port " << port << "\n";
-        close(udp_host.socket);
-        return false;
-    }
-
-    std::cout << " UDP Listening Socket Initialized on Port " << port << "!\n";
+    cout << "UDP Connection Success !" << endl << endl;
     return true;
 }
-
 
 // calculate the size of a sample in quadlets
 static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_motors)
@@ -515,12 +311,11 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     // Encoder Velocity Predicted (64 * num of encoders -> truncated to 32bits)     [1 quadlet * num of encoders]
     // Motur Current and Motor Status (32 * num of Motors -> each are 16 bits)      [1 quadlet * num of motors]
     // Digtial IO Values  (optional, used if PS IO is enabled ) 32 bits             [1 quadlet * digital IO]
-    // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
-    // Force Torque Readings -> 6 * 32 bits                                         [1 quadlet * 6 Fore/Torque Readings]                 
+    // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]                  
     if (use_ps_io_flag){
-        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors));
     } else {
-        return (1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+        return (1 + (2*(num_encoders)) + (num_motors));
     }
     
 }
@@ -597,47 +392,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 4 & 5: motor current and motor status (for num_motors)
         for (int i = 0; i < num_motors; i++) {
             uint32_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); 
-            // uint32_t motor_status = dvrk_controller.Board->GetMotorStatus(i);
-            // data_packet[count++] = (uint32_t)(((motor_status & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
-
-
-            uint32_t raw_cmd_current;
-            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
-            // int16_t raw_cmd_current_16_bit = static_cast<int16_t>(raw_cmd_current);
-            // uint16_t cmd_current_casted = *reinterpret_cast<uint16_t *>(&raw_cmd_current_16_bit);
-
-            data_packet[count++] = (uint32_t)(((raw_cmd_current & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
+            uint32_t motor_status = dvrk_controller.Board->GetMotorStatus(i);
+            data_packet[count++] = (uint32_t)(((motor_status & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
         }
-
-         // DATA 6: force readings
-        float force_sensor[FORCE_SAMPLE_NUM_DEGREES];
-
-        // d_start_time = std::chrono::high_resolution_clock::now();
-        int fs_ret = return_force_sample_3dof(force_sensor);
-
-        force_sensor[0] -= FS_X_BIAS;
-        force_sensor[1] -= FS_Y_BIAS;
-        force_sensor[2] -= FS_Z_BIAS;
-                // d_end_time = std::chrono::high_resolution_clock::now();
-
-        // fs_time_elapsed += convert_chrono_duration_to_float(d_start_time, d_end_time);
-         
-        if(fs_ret == FS_NO_DATA_AVAILABLE){
-
-            for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++){
-                data_packet[count++] = *reinterpret_cast<uint32_t *>(&last_fs_sample[i]);
-           }
-        } else if (fs_ret == FS_SUCCESS) {
-            memcpy( last_fs_sample, force_sensor, sizeof(last_fs_sample));
-
-            for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++){
-                data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
-           }
-        } else if (fs_ret == FS_FAIL){
-            cout << "[ERROR] Failed to grab darta from force sensor" << endl;
-            return false;
-        }
- 
 
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
@@ -864,7 +621,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             stop_data_collection_flag = true;
 
             pthread_join(consumer_t, nullptr);
-            force_sensor_stop_streaming();
 
             cout << "------------------------------------------------" << endl;
             cout << "UDP DATA PACKETS SENT TO HOST: " << data_packet_count << endl;
@@ -872,7 +628,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
             cout << "TIME ELAPSED: " << last_timestamp << endl;
             cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
-            cout << "AVERAGE FORCE SENSOR reading time: " << fs_time_elapsed/sample_count << endl;
             cout << "------------------------------------------------" << endl << endl;
 
             emio_read_error_counter = 0; 
@@ -902,16 +657,6 @@ SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
     start_time = std::chrono::high_resolution_clock::now();
     sm.state = SM_START_CONSUMER_THREAD;
-
-    // force_sensor_stop_streaming();
-    int fs_ok = force_sensor_start_streaming();
-
-    if (fs_ok == FS_FAIL){
-        cout << "[ERROR] Fail to start force sensor streaming" << endl;
-        sm.ret = SM_BOARD_ERROR;
-        sm.state = SM_EXIT;
-    }
-
     return sm;
 }
 
@@ -938,8 +683,6 @@ SM terminate_data_collection(SM sm){
                 cout << "Failed to Create Thread" << endl;
             case SM_BOARD_ERROR:
                 cout << "Board Error" << endl;
-            case SM_FORCE_SENSOR_FAIL:
-                cout << "Failed to Connect to Force Sensor" << endl;
         }
 
     } else {
@@ -972,30 +715,6 @@ static int dataCollectionStateMachine()
         sm.ret = SM_PS_IO_FAIL;
     }
 
-    cout << "Initializing_force_sensor..." << endl;
-    init_force_sensor_connection();
-
-    force_sensor_start_streaming();
-    float sample[FORCE_SAMPLE_NUM_DEGREES];
-
-    if (return_force_sample_3dof(sample) == FS_FAIL){
-        cout << "[ERROR] - Force sensor reading incorrect data. Check Initialization" << endl;
-    } else {
-        cout << "Initializing Force Sensor Success..." << endl;
-    }
-    force_sensor_stop_streaming();
-
-    force_sensor_update_bias_values();
-
-
-    bool isOK = initiate_socket_connection();
-
-    if (!isOK) {
-        cout << "[error] failed to establish socket connection !!" << endl;
-        return -1;
-    }
-
-
     sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
 
     while (sm.state != SM_EXIT) {
@@ -1003,7 +722,6 @@ static int dataCollectionStateMachine()
         switch (sm.state) {
             case SM_WAIT_FOR_HOST_HANDSHAKE:
                 sm = wait_for_host_handshake(sm);
-                // printf("handshake\n");
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:
@@ -1077,7 +795,12 @@ int main()
 
     dvrk_controller.Port->AddBoard(dvrk_controller.Board);
 
-    
+    bool isOK = initiate_socket_connection(udp_host.socket);
+
+    if (!isOK) {
+        cout << "[error] failed to establish socket connection !!" << endl;
+        return -1;
+    }
 
     dataCollectionStateMachine();
 
