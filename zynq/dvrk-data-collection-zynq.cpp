@@ -435,7 +435,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             sample_end_time = std::chrono::high_resolution_clock::now();
             double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
 
-            double delay_for_target_sample_rate = calculate_sample_rate_delay(1000, sample_processing_time);
+            double delay_for_target_sample_rate = calculate_sample_rate_delay(SAMPLE_RATE, sample_processing_time);
             double step = (delay_for_target_sample_rate * 1000000000.0);
 
             ts.tv_sec = 0;
