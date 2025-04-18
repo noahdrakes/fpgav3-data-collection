@@ -110,10 +110,6 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
         idx++;
     }
 
-    for (int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
-        proc_sample.force_torque[i] = *reinterpret_cast<float *> (&data_packet[idx++]);
-    }
-
     if (use_ps_io){
         proc_sample.digital_io = data_packet[idx++];
         proc_sample.mio_pins = data_packet[idx++];
@@ -170,8 +166,6 @@ void DataCollection::handle_data_collection() {
 
     write_csv_headers();
 
-    cout << "csv header printed" << endl;
-
     while (!stop_data_collection_flag) {
         int ret_code = udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size);
 
@@ -207,21 +201,9 @@ void DataCollection::write_csv_headers() {
         myFile << "MOTOR_CURRENT_" << i << ",";
     }
     for (int i = 1; i <= dc_meta.num_motors; i++) {
-        myFile << "MOTOR_STATUS_" << i << ",";
-        // if (i < dc_meta.num_motors) myFile << ",";
+        myFile << "MOTOR_STATUS_" << i;
+        if (i < dc_meta.num_motors) myFile << ",";
     }
-
-    for (int i = 1; i <= FORCE_SAMPLE_NUM_DEGREES; i++) {
-
-        if (i <= FORCE_SAMPLE_NUM_DEGREES){
-            myFile << "FORCE_" << i;
-        } 
-        
-        if (i < FORCE_SAMPLE_NUM_DEGREES) myFile << ",";
-
-        // myFile << ",";
-    }
-
     if (use_ps_io) {
         myFile << ",DIGITAL_IO,MIO_PINS";
     }
@@ -231,7 +213,6 @@ void DataCollection::write_csv_headers() {
 
 void DataCollection::process_and_write_data() {
     for (int i = 0; i < dc_meta.data_packet_size / 4; i += dc_meta.size_of_sample) {
-        // cout << "packet: " << i << endl;
         process_sample(data_packet, i);
 
         myFile << proc_sample.timestamp << ",";
@@ -247,23 +228,9 @@ void DataCollection::process_and_write_data() {
         }
 
         for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << static_cast<int16_t>(proc_sample.motor_status[j]) << ","; 
+            myFile << static_cast<int16_t>(proc_sample.motor_status[j]);
+            if (j < dc_meta.num_motors - 1) myFile << ",";
         }
-
-        // cout << "before writing torque forces" << endl;
-
-        for (int j = 0; j < FORCE_SAMPLE_NUM_DEGREES; j++){
-
-            // cout << j << endl;
-            myFile << proc_sample.force_torque[j];
-
-            if (j < FORCE_SAMPLE_NUM_DEGREES - 1) {
-                myFile << ",";
-            }
-
-        }
-
-        // cout << "no seg fault" << endl;
 
         if (use_ps_io) {
             myFile << "," << proc_sample.digital_io << "," << proc_sample.mio_pins;

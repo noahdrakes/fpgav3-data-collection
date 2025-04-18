@@ -103,6 +103,9 @@ int sample_count = 0;
 // for emio timeout error
 int32_t emio_read_error_counter = 0; 
 
+double usleep_bias = 0; 
+double chrono_time_bias = 0;
+
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
@@ -110,8 +113,12 @@ std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
 chrono::time_point<std::chrono::high_resolution_clock> sample_start_time;
 chrono::time_point<std::chrono::high_resolution_clock> sample_end_time;
 
+chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time;
+
 chrono::time_point<std::chrono::high_resolution_clock> overhead_start_time;
 chrono::time_point<std::chrono::high_resolution_clock> overhead_end_time;
+
+
 // uint16_t target_sample_rate = 2000;
 struct timespec ts;
 double timestamp_offset;
@@ -330,18 +337,13 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     
 }
 
-static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time){
-    double time = ( (1.0/ (double) target_sample_rate) - sample_processing_time);
+static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time) {
+    double period = 1.0 / target_sample_rate;
+    double delay = period - sample_processing_time;
 
-    if (time >=0 ){
-        return time;
-    }
-    else {
-        printf("0\n");
-        return 0;
-    }
-
+    return (delay > 0.0) ? delay : 0.0;
 }
+
 // calculates the # of samples per packet in quadlets
 static uint16_t calculate_samples_per_packet(uint8_t num_encoders, uint8_t num_motors)
 {
@@ -400,15 +402,15 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         
         float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
 
-        if (sample_count == 0){
-            timestamp_offset = time_elapsed;
-        }
+        // if (sample_count == 0){
+        //     timestamp_offset = time_elapsed;
+        // }
 
-        time_elapsed -= timestamp_offset;
+        // time_elapsed -= timestamp_offset;
         
         
         last_timestamp = time_elapsed;
-
+        
         data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
 
         // DATA 2: encoder position
@@ -435,17 +437,20 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
 
-        sample_end_time = chrono::high_resolution_clock::now();
+        sample_end_time = std::chrono::high_resolution_clock::now();
 
-        double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) - 0.000004;
+        // double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias + 0.0000088;
+        double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
 
-        if (j == 0){
-            sample_processing_time += convert_chrono_duration_to_float(overhead_start_time, overhead_end_time);
-            // printf("overhead\n");
-        }
+        
 
-        double delay_for_target_sample_rate = calculate_sample_rate_delay(10000, sample_processing_time);
-        double step = (delay_for_target_sample_rate *  (double) 1000000000.0);
+        // if (j == 0){
+        //     sample_processing_time += convert_chrono_duration_to_float(overhead_start_time, overhead_end_time);
+        //     // printf("overhead\n");
+        // }
+
+        double delay_for_target_sample_rate = calculate_sample_rate_delay(1000, sample_processing_time);
+        double step = (delay_for_target_sample_rate * 1000000000.0);
 
         // printf("Delay in seconds: %f\n", delay_for_target_sample_rate + sample_processing_time);
         // printf("processing time: %f\n", sample_processing_time);
@@ -458,6 +463,14 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // printf("sample time: %f , sample delay time: %f\n", sample_processing_time, delay_for_target_sample_rate );
 
         nanosleep(&ts, NULL);   
+        // usleep((long) step);
+
+        // chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time = std::chrono::high_resolution_clock::now();
+
+        // double sample_diff = convert_chrono_duration_to_float(sample_start_time, sample_very_end_time);
+        // float sample_time_diff = static_cast<float>(sample_diff);
+
+        // data_packet[store_count] = *reinterpret_cast<uint32_t *> (&sample_time_diff);
 
         sample_count++;
     }
@@ -717,6 +730,7 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
 
 SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
+    reset_double_buffer_info(&db, dvrk_controller.Board);
     start_time = std::chrono::high_resolution_clock::now();
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
@@ -884,6 +898,37 @@ int main()
     }
 
     printf("average_print_time: %f\n", track_time / 10000.0);
+    chrono_time_bias = track_time / 10000.0;
+
+    track_time = 0;
+
+    // for(int i = 0; i <10000; i++){
+    //     t_out_start = chrono::high_resolution_clock::now();
+    //     usleep(0);
+    //     t_out_end = chrono::high_resolution_clock::now();
+    //     track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    // }
+
+    // printf("average_usleep_time: %f\n", track_time / 10000.0);
+    // usleep_bias = track_time;
+
+    for(int i = 0; i <10000; i++){
+        t_out_start = chrono::high_resolution_clock::now();
+
+        ts.tv_sec = 0;
+        ts.tv_nsec =  0;
+
+        // printf("sample time: %f , sample delay time: %f\n", sample_processing_time, delay_for_target_sample_rate );
+
+        nanosleep(&ts, NULL);  
+        t_out_end = chrono::high_resolution_clock::now();
+        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    }
+
+    printf("average_usleep_time: %f\n", track_time / 10000.0);
+    usleep_bias = track_time / 10000.0;
+
+    
 
     dataCollectionStateMachine();
 
