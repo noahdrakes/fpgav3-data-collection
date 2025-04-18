@@ -20,6 +20,7 @@ http://www.cisst.org/cisst/license.txt.
 
 #include <chrono>
 #include <string>
+#include <stdint.h>
 
 #include "data_collection_shared.h"
 
@@ -76,6 +77,8 @@ class DataCollection {
 
         bool use_ps_io = false;
 
+        bool use_sample_rate = false;
+
         bool stop_data_collection_flag;
 
         bool collect_data_ret;
@@ -87,6 +90,8 @@ class DataCollection {
         int udp_data_packets_recvd_count = 0;
 
         int packet_misses_counter = 0;
+
+        uint16_t sample_rate = 0;
 
         std::ofstream myFile;
 
@@ -111,7 +116,7 @@ class DataCollection {
         pthread_t collect_data_t;
     public:
         DataCollection();
-        bool init(uint8_t boardID, bool usePSIO);
+        bool init(uint8_t boardID, bool usePSIO, bool useSampleRate, int sample_rate);
         bool start();
         bool stop();
         bool terminate();
