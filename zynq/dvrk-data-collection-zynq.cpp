@@ -103,8 +103,10 @@ int sample_count = 0;
 // for emio timeout error
 int32_t emio_read_error_counter = 0; 
 
+// start time for data collection timestamps
 double usleep_bias = 0; 
 double chrono_time_bias = 0;
+double last_timestamp = 0;
 
 // start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
@@ -118,12 +120,13 @@ chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time;
 chrono::time_point<std::chrono::high_resolution_clock> overhead_start_time;
 chrono::time_point<std::chrono::high_resolution_clock> overhead_end_time;
 
+int SAMPLE_RATE = 0;
+bool useSampleRate = false;
+
 
 // uint16_t target_sample_rate = 2000;
 struct timespec ts;
 double timestamp_offset;
-
-float last_timestamp = 0;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -337,6 +340,7 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     
 }
 
+
 static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time) {
     double period = 1.0 / target_sample_rate;
     double delay = period - sample_processing_time;
@@ -382,7 +386,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     uint16_t count = 0;
 
     // CAPTURE DATA 
-    for (int j = 0; j < samples_per_packet; j++) {
+    for (int i = 0; i < samples_per_packet; i++) {
 
         sample_start_time = chrono::high_resolution_clock::now();
 
@@ -398,19 +402,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         // DATA 1: timestamp
         end_time = std::chrono::high_resolution_clock::now();
-
-        
         float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
-
-        // if (sample_count == 0){
-        //     timestamp_offset = time_elapsed;
-        // }
-
-        // time_elapsed -= timestamp_offset;
-        
-        
         last_timestamp = time_elapsed;
-        
+
         data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
 
         // DATA 2: encoder position
@@ -436,41 +430,19 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
-
-        sample_end_time = std::chrono::high_resolution_clock::now();
-
-        // double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias + 0.0000088;
-        double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
-
         
+        if (useSampleRate){
+            sample_end_time = std::chrono::high_resolution_clock::now();
+            double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
 
-        // if (j == 0){
-        //     sample_processing_time += convert_chrono_duration_to_float(overhead_start_time, overhead_end_time);
-        //     // printf("overhead\n");
-        // }
+            double delay_for_target_sample_rate = calculate_sample_rate_delay(1000, sample_processing_time);
+            double step = (delay_for_target_sample_rate * 1000000000.0);
 
-        double delay_for_target_sample_rate = calculate_sample_rate_delay(1000, sample_processing_time);
-        double step = (delay_for_target_sample_rate * 1000000000.0);
+            ts.tv_sec = 0;
+            ts.tv_nsec =  (long) step;
 
-        // printf("Delay in seconds: %f\n", delay_for_target_sample_rate + sample_processing_time);
-        // printf("processing time: %f\n", sample_processing_time);
-        // printf("Delay in nanoseconds: %ld\n", (long)(delay_for_target_sample_rate * 1000000000.0));
-
-
-        ts.tv_sec = 0;
-        ts.tv_nsec =  (long) step;
-
-        // printf("sample time: %f , sample delay time: %f\n", sample_processing_time, delay_for_target_sample_rate );
-
-        nanosleep(&ts, NULL);   
-        // usleep((long) step);
-
-        // chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time = std::chrono::high_resolution_clock::now();
-
-        // double sample_diff = convert_chrono_duration_to_float(sample_start_time, sample_very_end_time);
-        // float sample_time_diff = static_cast<float>(sample_diff);
-
-        // data_packet[store_count] = *reinterpret_cast<uint32_t *> (&sample_time_diff);
+            nanosleep(&ts, NULL);  
+        }
 
         sample_count++;
     }
@@ -534,6 +506,24 @@ SM wait_for_host_handshake( SM sm ){
         
         else if (strcmp(recvd_cmd, HOST_READY_CMD_W_PS_IO) == 0){
             cout << "Received Message - " <<  HOST_READY_CMD_W_PS_IO << endl;
+            use_ps_io_flag = true;
+
+            // special case: need to resize double_buffer size to account
+            // for extra ps io data
+            reset_double_buffer_info(&db, dvrk_controller.Board); 
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }
+
+        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_SAMPLE_RATE) == 0){
+            cout << "Received Message - " <<  HOST_READY_CMD_W_SAMPLE_RATE << endl;
+            useSampleRate = true;
+            
+
+            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
+            
+            SAMPLE_RATE = (int) recvd_cmd;
+            
+
             use_ps_io_flag = true;
 
             // special case: need to resize double_buffer size to account
@@ -671,8 +661,6 @@ SM produce_data( SM sm ){
         return sm;
     }
 
-    overhead_start_time = std::chrono::high_resolution_clock::now();
-
     while (db.cons_busy) {}
 
     // Switch to the next buffer
@@ -706,7 +694,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             emio_read_error_counter = 0; 
             data_packet_count = 0;
             sample_count = 0;
-      
 
             sm.state = SM_WAIT_FOR_HOST_START_CMD;
             cout << "Waiting for command from host..." << endl;
@@ -718,7 +705,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
         }
     } else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE){
         sm.state = SM_PRODUCE_DATA;
-        overhead_end_time = std::chrono::high_resolution_clock::now();
     } else {
         sm.ret = SM_UDP_ERROR;
         sm.last_state = sm.state;
@@ -730,7 +716,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
 
 SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
-    reset_double_buffer_info(&db, dvrk_controller.Board);
     start_time = std::chrono::high_resolution_clock::now();
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
@@ -879,7 +864,7 @@ int main()
     }
 
 
-    chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
+     chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
     chrono::time_point<std::chrono::high_resolution_clock> t_out_end;
 
     chrono::time_point<std::chrono::high_resolution_clock> t_in_start;
@@ -927,9 +912,6 @@ int main()
 
     printf("average_usleep_time: %f\n", track_time / 10000.0);
     usleep_bias = track_time / 10000.0;
-
-    
-
     dataCollectionStateMachine();
 
     return 0;
