@@ -100,7 +100,9 @@ int main(int argc, char *argv[])
     bool startFlag = false;
     bool timedCaptureFlag = false;
     bool use_ps_io_flag = false;
+    bool use_sample_rate = false;
     uint8_t boardID; 
+    int sample_rate = 0;
     
 
     // cmd line variables
@@ -153,6 +155,18 @@ int main(int argc, char *argv[])
                 }
             }
 
+            else if (argv[i][1] == 's'){
+                if (!isInteger(argv[i+1])) {
+                    cout << "[ERROR] invalid sample rate value " << argv[i+1] << " for timed capture. Pass in Integer" << endl;
+                    return -1;
+                } else {
+                    use_sample_rate = true;
+                    sample_rate = atoi(argv[i+1]);
+                    cout << " Sample Rate set to " << sample_rate << "Hz" << endl;
+                    i+=1;
+                }
+            }
+
             else if (argv[i][1] == 'i' ) {
                 use_ps_io_flag = true;
                 cout << "PS IO pins will be included in data packet!" << endl;
@@ -170,7 +184,7 @@ int main(int argc, char *argv[])
     DataCollection *DC = new DataCollection();
     bool stop_data_collection = false;
 
-    if (!DC->init(boardID, use_ps_io_flag)) {
+    if (!DC->init(boardID, use_ps_io_flag, use_sample_rate, sample_rate)) {
         return -1;
     }
 

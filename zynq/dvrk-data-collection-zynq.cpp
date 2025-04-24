@@ -107,11 +107,31 @@ int sample_count = 0;
 int32_t emio_read_error_counter = 0; 
 
 // start time for data collection timestamps
+double usleep_bias = 0; 
+double chrono_time_bias = 0;
+double last_timestamp = 0;
+
+// start time for data collection timestamps
 std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> d_start_time;
 std::chrono::time_point<std::chrono::high_resolution_clock> d_end_time;
-float last_timestamp = 0;
+
+chrono::time_point<std::chrono::high_resolution_clock> sample_start_time;
+chrono::time_point<std::chrono::high_resolution_clock> sample_end_time;
+
+chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time;
+
+chrono::time_point<std::chrono::high_resolution_clock> overhead_start_time;
+chrono::time_point<std::chrono::high_resolution_clock> overhead_end_time;
+
+int SAMPLE_RATE = 0;
+bool useSampleRate = false;
+
+// uint16_t target_sample_rate = 2000;
+struct timespec ts;
+double timestamp_offset;
+
 float fs_time_elapsed = 0;
 
 // FLAG set when the host terminates data collection
@@ -503,6 +523,14 @@ static bool initiate_socket_connection()
 }
 
 
+static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time) {
+    double period = 1.0 / target_sample_rate;
+    double delay = period - sample_processing_time;
+
+    return (delay > 0.0) ? delay : 0.0;
+}
+
+
 // calculate the size of a sample in quadlets
 static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_motors)
 {
@@ -564,6 +592,8 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
     // CAPTURE DATA 
     for (int i = 0; i < samples_per_packet; i++) {
+
+        sample_start_time = chrono::high_resolution_clock::now();
 
         if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
@@ -643,6 +673,19 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
+
+        if (useSampleRate){
+            sample_end_time = std::chrono::high_resolution_clock::now();
+            double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
+
+            double delay_for_target_sample_rate = calculate_sample_rate_delay(SAMPLE_RATE, sample_processing_time);
+            double step = (delay_for_target_sample_rate * 1000000000.0);
+
+            ts.tv_sec = 0;
+            ts.tv_nsec =  (long) step;
+
+            nanosleep(&ts, NULL);  
+        }
         
         sample_count++;
     }
@@ -714,7 +757,15 @@ SM wait_for_host_handshake( SM sm ){
             sm.state = SM_SEND_DATA_COLLECTION_METADATA;
         }
 
-        else {
+        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_SAMPLE_RATE) == 0){
+            cout << "Received Message - " <<  HOST_READY_CMD_W_SAMPLE_RATE << endl;
+            useSampleRate = true;
+            
+            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
+            
+            SAMPLE_RATE = (int) recvd_cmd;
+
+        } else {
             sm.ret = SM_OUT_OF_SYNC;
             sm.last_state = sm.state;
             sm.state = SM_TERMINATE;
@@ -1076,6 +1127,44 @@ int main()
     dvrk_controller.Board = new AmpIO(dvrk_controller.Port->GetBoardId(0));
 
     dvrk_controller.Port->AddBoard(dvrk_controller.Board);
+
+
+    chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
+    chrono::time_point<std::chrono::high_resolution_clock> t_out_end;
+
+    chrono::time_point<std::chrono::high_resolution_clock> t_in_start;
+    chrono::time_point<std::chrono::high_resolution_clock> t_in_end; 
+
+    double track_time = 0;
+
+    for(int i = 0; i <10000; i++){
+        t_out_start = chrono::high_resolution_clock::now();
+
+        t_in_start = chrono::high_resolution_clock::now();
+        t_in_end = chrono::high_resolution_clock::now();
+        t_out_end = chrono::high_resolution_clock::now();
+
+        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    }
+
+    printf("average_print_time: %f\n", track_time / 10000.0);
+    chrono_time_bias = track_time / 10000.0;
+
+    track_time = 0;
+
+    for(int i = 0; i <10000; i++){
+        t_out_start = chrono::high_resolution_clock::now();
+
+        ts.tv_sec = 0;
+        ts.tv_nsec =  0;
+
+        nanosleep(&ts, NULL);  
+        t_out_end = chrono::high_resolution_clock::now();
+        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    }
+
+    printf("average_usleep_time: %f\n", track_time / 10000.0);
+    usleep_bias = track_time / 10000.0;
 
     
 

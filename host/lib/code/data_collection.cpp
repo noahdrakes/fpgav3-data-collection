@@ -321,11 +321,16 @@ DataCollection::DataCollection()
 
 // TODO: need to add useful return statements -> all the close socket cases are just returns
 // make sure logic checks out 
-bool DataCollection :: init(uint8_t boardID, bool usePSIO)
+bool DataCollection :: init(uint8_t boardID, bool usePSIO, bool useSampleRate, int sample_rate)
 {
     if(!udp_init(&sock_id, boardID)) {
         return false;
     }
+
+    if(useSampleRate){
+        use_sample_rate = true; 
+    }
+
 
     sm_state = SM_SEND_READY_STATE_TO_PS;
     int ret_code = 0;
@@ -343,6 +348,10 @@ bool DataCollection :: init(uint8_t boardID, bool usePSIO)
 
                 if (use_ps_io){
                     udp_transmit(sock_id, (char *)HOST_READY_CMD_W_PS_IO, sizeof(HOST_READY_CMD_W_PS_IO));
+                
+                } else if (use_sample_rate){
+                        udp_transmit(sock_id, (char *)HOST_READY_CMD_W_SAMPLE_RATE, sizeof(HOST_READY_CMD_W_SAMPLE_RATE));
+                        udp_transmit(sock_id, (void *) &sample_rate, sizeof(sample_rate));
                 } else {
                     udp_transmit(sock_id, (char *)HOST_READY_CMD, sizeof(HOST_READY_CMD));
                 }
@@ -416,6 +425,8 @@ bool DataCollection :: init(uint8_t boardID, bool usePSIO)
 
 bool DataCollection :: start()
 {
+    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {cout << "clearing udp packet buffer" <<std::endl;}
+    
     if (pthread_create(&collect_data_t, nullptr, DataCollection::collect_data_thread, this) != 0) {
         std::cerr << "Error collect data thread" << std::endl;
         return 1;

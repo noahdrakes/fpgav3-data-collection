@@ -76,6 +76,9 @@ class DataCollection {
 
         bool use_ps_io = false;
 
+        bool use_sample_rate = false;
+        uint16_t sample_rate = 0;
+
         bool stop_data_collection_flag;
 
         bool collect_data_ret;
@@ -111,7 +114,7 @@ class DataCollection {
         pthread_t collect_data_t;
     public:
         DataCollection();
-        bool init(uint8_t boardID, bool usePSIO);
+        bool init(uint8_t boardID, bool usePSIO, bool useSampleRate, int sample_rate);
         bool start();
         bool stop();
         bool terminate();
