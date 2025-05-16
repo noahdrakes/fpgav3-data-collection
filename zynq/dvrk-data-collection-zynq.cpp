@@ -132,6 +132,8 @@ double start_data_collection_time = 0.0;
 
 // uint16_t target_sample_rate = 2000;
 // struct timespec ts;
+timespec deadline;
+long period_ns;
 double timestamp_offset;
 
 // FLAG set when the host terminates data collection
@@ -398,45 +400,24 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
     int time_elapsed_index = 0;
 
-    
-    // overhead_end_time = std::chrono::high_resolution_clock::now();
-
-    
-
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t_overhead_end);
-
-    // double overhead_time = double(t_overhead_end.tv_sec  - t_overhead_start.tv_sec) + double(t_overhead_end.tv_nsec - t_overhead_start.tv_nsec) * 1e-9;
-
-    // just once, before the sample loop:
-    // timespec next_wakeup;
-    // clock_gettime(CLOCK_MONOTONIC, &next_wakeup);
-    // long period_ns = (long)(1e9 / SAMPLE_RATE);
-
-    // double adjusted_sample_rate = ((double)SAMPLE_RATE) / 0.9236  ;
-    // double Tp    = 1.0 / (double) SAMPLE_RATE;  // ideal period (s)
-    // double Kp    = .12;              // proportional gain (tune this)
-    // double Tnext = Tp;               // next absolute deadline
-
-    // timespec t0;
-    // clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
-
-    // Compute your fixed period in nanoseconds
-    // long period_ns = 1'000'000'000L / SAMPLE_RATE;
-
-// Grab the starting *absolute* time
-    // timespec deadline;
-    // clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
 
     double overhead_time, overhead_time1;
 
     // printf("PACKET COUNT: %d\n", data_packet_count);
 
+    // timespec deadline;
+    
+    
+
     // CAPTURE DATA 
     for (int j = 0; j < samples_per_packet; j++) {
 
-        timespec t_start, t_start_, t_end;
+        // timespec t_start, t_start_, t_end;
 
-        clock_gettime(CLOCK_MONOTONIC_RAW, &t_start);
+        // clock_gettime(CLOCK_MONOTONIC_RAW, &t_start);
+
+        timespec t0;
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
 
         // sample_start_time = chrono::high_resolution_clock::now();
 
@@ -456,28 +437,28 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 1: timestamp
         // double time_elapsed = convert_chrono_duration_to_double(start_time, sample_start_time);
 
-        double time_elapsed = ts_diff_s(t_data_collection_start, t_start);
-        overhead_time = ts_diff_s(t_overhead_start, t_overhead_end);
+        double time_elapsed = ts_diff_s(t_data_collection_start, t0);
+        // overhead_time = ts_diff_s(t_overhead_start, t_overhead_end);
 
-        if (j != (samples_per_packet - 1)){
-            // printf("overhead time: %f\n", overhead_time);
-            overhead_time = 0;
-        }
+        // if (j != (samples_per_packet - 1)){
+        //     // printf("overhead time: %f\n", overhead_time);
+        //     overhead_time = 0;
+        // }
 
         double time_diff = time_elapsed - last_timestamp;
 
         last_timestamp = time_elapsed;
-        // printf("diff of time elapsed between current sample and prev: %f\n", time_diff - last_time_diff);
+        // // printf("diff of time elapsed between current sample and prev: %f\n", time_diff - last_time_diff);
 
-        if (j != (samples_per_packet - 1)){
-            // printf("overhead time: %f\n", overhead_time);
-            overhead_time1 = 0;
-        } else {
-            overhead_time1 = time_diff - last_time_diff;
-            // overhead_time1 = .0001;
-        }
+        // if (j != (samples_per_packet - 1)){
+        //     // printf("overhead time: %f\n", overhead_time);
+        //     overhead_time1 = 0;
+        // } else {
+        //     overhead_time1 = time_diff - last_time_diff;
+        //     // overhead_time1 = .0001;
+        // }
 
-        last_time_diff = time_diff;
+        // last_time_diff = time_diff;
         
 
         time_elapsed_index = count;
@@ -517,20 +498,37 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             float time_diff_ = static_cast<float>(time_diff);
             data_packet[time_elapsed_index] = *reinterpret_cast<uint32_t *> (&time_diff_);
             /////////////////////////////////////////////////////////////////////////////////
-    
+            
+            // clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
 
-            double elapsed_seconds = 0;
+            // 2) compute how long that took
+            // long work_ns = (t1.tv_sec - t0.tv_sec) * 1'000'000'000L + (t1.tv_nsec - t0.tv_nsec);
+
+            // 3) advance the absolute deadline
+            deadline.tv_nsec += period_ns;
+            if (deadline.tv_nsec >= 1'000'000'000) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1'000'000'000;
+            }
+
+            // 4) busy spin until deadline, subtracting work_ns if you like
+            timespec now;
+            do {
+                clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+            } while ((now.tv_sec  < deadline.tv_sec) ||
+                (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec));
+
+            // double elapsed_seconds = 0;
             // double overhead_time = 0; 
 
             // overhead_time = 1;
             
 
-            while (elapsed_seconds < ((1.0 / ( (double) SAMPLE_RATE)) - (2 * get_time_bias) - (overhead_time) + (overhead_time/4))) {
-                clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
-                elapsed_seconds = double(t_end.tv_sec  - t_start.tv_sec) + double(t_end.tv_nsec - t_start.tv_nsec) * 1e-9;
+            // while (elapsed_seconds < ((1.0 / ( (double) SAMPLE_RATE)) - (2 * get_time_bias) - (overhead_time) + (overhead_time/4))) {
+            //     clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
+            //     elapsed_seconds = double(t_end.tv_sec  - t_start.tv_sec) + double(t_end.tv_nsec - t_start.tv_nsec) * 1e-9;
                 
-            }
-
+            // }
         }
 
         // overhead_start_time = std::chrono::high_resolution_clock::now();
@@ -542,7 +540,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     // }
     
 
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t_overhead_start);
+    // clock_gettime(CLOCK_MONOTONIC_RAW, &t_overhead_start);
 
     return true;    
 }
@@ -624,6 +622,8 @@ SM wait_for_host_handshake( SM sm ){
 
             SAMPLE_RATE = *sample_rate;
             printf("NEW SAMPLE RATE: %d\n", *sample_rate);
+
+            period_ns = 1'000'000'000L / SAMPLE_RATE;
             
 
             use_ps_io_flag = true;
@@ -820,6 +820,9 @@ SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
     // start_time = std::chrono::high_resolution_clock::now();
     clock_gettime(CLOCK_MONOTONIC_RAW, &t_data_collection_start);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
+    // compute the nanoseconds between samples
+    period_ns = 1'000'000'000L / SAMPLE_RATE;
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
 }
@@ -1015,6 +1018,8 @@ int main()
     }
     get_time_bias = total / N;
     printf("clock get time bias: %f\n", get_time_bias);
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
 
     dataCollectionStateMachine();
 
