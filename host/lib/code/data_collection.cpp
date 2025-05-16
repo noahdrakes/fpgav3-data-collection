@@ -323,7 +323,7 @@ bool DataCollection :: init(uint8_t boardID, bool usePSIO, bool useSampleRate, i
 
                 if(use_sample_rate){
                     udp_transmit(sock_id, (char *)HOST_READY_CMD_W_SAMPLE_RATE, sizeof(HOST_READY_CMD_W_SAMPLE_RATE));
-                    udp_transmit(sock_id, (void *) &sample_rate, sizeof(sample_rate));
+                    udp_transmit(sock_id, (int *) &sample_rate, sizeof(sample_rate));
                 }
                 
                 

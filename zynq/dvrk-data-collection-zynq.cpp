@@ -120,12 +120,18 @@ chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time;
 chrono::time_point<std::chrono::high_resolution_clock> overhead_start_time;
 chrono::time_point<std::chrono::high_resolution_clock> overhead_end_time;
 
+timespec t_overhead_start, t_overhead_end, t_data_collection_start;
+
 int SAMPLE_RATE = 0;
 bool useSampleRate = false;
+double get_time_bias = 0;
+double last_time_diff = 0;
+
+double start_data_collection_time = 0.0;
 
 
 // uint16_t target_sample_rate = 2000;
-struct timespec ts;
+// struct timespec ts;
 double timestamp_offset;
 
 // FLAG set when the host terminates data collection
@@ -165,8 +171,6 @@ struct UDP_Info {
     struct sockaddr_in Addr;
     socklen_t AddrLen;
 } udp_host; // this is global bc there will only be one
-
-
 
 
 static int mio_mmap_init()
@@ -361,10 +365,17 @@ static uint16_t calculate_quadlets_per_packet(uint8_t num_encoders, uint8_t num_
 }
 
 // returns the duration between start and end using the chrono
-static float convert_chrono_duration_to_float(chrono::high_resolution_clock::time_point start, chrono::high_resolution_clock::time_point end )
+static double convert_chrono_duration_to_double(chrono::high_resolution_clock::time_point start, chrono::high_resolution_clock::time_point end )
 {
-    std::chrono::duration<float> duration = end - start;
+    std::chrono::duration<double> duration = end - start;
     return duration.count();
+}
+
+// Compute elapsed seconds between two timespecs
+static double ts_diff_s(const timespec &start, const timespec &end) {
+    time_t  dsec  = end.tv_sec  - start.tv_sec;
+    long    dnsec = end.tv_nsec - start.tv_nsec;
+    return double(dsec) + double(dnsec) * 1e-9;
 }
 
 // loads data buffer for data collection
@@ -385,10 +396,49 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     uint16_t samples_per_packet = calculate_samples_per_packet(num_encoders, num_motors);
     uint16_t count = 0;
 
-    // CAPTURE DATA 
-    for (int i = 0; i < samples_per_packet; i++) {
+    int time_elapsed_index = 0;
 
-        sample_start_time = chrono::high_resolution_clock::now();
+    
+    // overhead_end_time = std::chrono::high_resolution_clock::now();
+
+    
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t_overhead_end);
+
+    // double overhead_time = double(t_overhead_end.tv_sec  - t_overhead_start.tv_sec) + double(t_overhead_end.tv_nsec - t_overhead_start.tv_nsec) * 1e-9;
+
+    // just once, before the sample loop:
+    // timespec next_wakeup;
+    // clock_gettime(CLOCK_MONOTONIC, &next_wakeup);
+    // long period_ns = (long)(1e9 / SAMPLE_RATE);
+
+    double adjusted_sample_rate = ((double)SAMPLE_RATE) / 0.9236  ;
+    // double Tp    = 1.0 / (double) SAMPLE_RATE;  // ideal period (s)
+    // double Kp    = .12;              // proportional gain (tune this)
+    // double Tnext = Tp;               // next absolute deadline
+
+    // timespec t0;
+    // clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
+
+    // Compute your fixed period in nanoseconds
+    // long period_ns = 1'000'000'000L / SAMPLE_RATE;
+
+// Grab the starting *absolute* time
+    // timespec deadline;
+    // clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
+
+    double overhead_time, overhead_time1;
+
+    // printf("PACKET COUNT: %d\n", data_packet_count);
+
+    // CAPTURE DATA 
+    for (int j = 0; j < samples_per_packet; j++) {
+
+        timespec t_start, t_start_, t_end;
+
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_start);
+
+        // sample_start_time = chrono::high_resolution_clock::now();
 
         if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
@@ -400,12 +450,39 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             return false;
         }
 
-        // DATA 1: timestamp
-        end_time = std::chrono::high_resolution_clock::now();
-        float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
-        last_timestamp = time_elapsed;
+        // clock_gettime(CLOCK_MONOTONIC_RAW, &t_start_);
+        // clock_gettime(CLOCK_MONOTONIC_RAW, &t_start);
 
-        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
+        // DATA 1: timestamp
+        // double time_elapsed = convert_chrono_duration_to_double(start_time, sample_start_time);
+
+        double time_elapsed = ts_diff_s(t_data_collection_start, t_start);
+        overhead_time = ts_diff_s(t_overhead_start, t_overhead_end);
+
+        if (j != (samples_per_packet - 1)){
+            // printf("overhead time: %f\n", overhead_time);
+            overhead_time = 0;
+        }
+
+        double time_diff = time_elapsed - last_timestamp;
+
+        last_timestamp = time_elapsed;
+        // printf("diff of time elapsed between current sample and prev: %f\n", time_diff - last_time_diff);
+
+        if (j != (samples_per_packet - 1)){
+            // printf("overhead time: %f\n", overhead_time);
+            overhead_time1 = 0;
+        } else {
+            overhead_time1 = time_diff - last_time_diff;
+            // overhead_time1 = .0001;
+        }
+
+        last_time_diff = time_diff;
+        
+
+        time_elapsed_index = count;
+        float time_elapsed_float = static_cast<float>(time_elapsed);
+        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed_float);
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
@@ -430,22 +507,41 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
+
+        // float time_diff_ = static_cast<float>(time_diff);
+        // data_packet[time_elapsed_index] = *reinterpret_cast<uint32_t *> (&time_diff_);
         
         if (useSampleRate){
-            sample_end_time = std::chrono::high_resolution_clock::now();
-            double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
 
-            double delay_for_target_sample_rate = calculate_sample_rate_delay(SAMPLE_RATE, sample_processing_time);
-            double step = (delay_for_target_sample_rate * 1000000000.0);
+            /////////////////////////////////////////////////////////////////////////////////
+            float time_diff_ = static_cast<float>(time_diff);
+            data_packet[time_elapsed_index] = *reinterpret_cast<uint32_t *> (&time_diff_);
+            /////////////////////////////////////////////////////////////////////////////////
+    
 
-            ts.tv_sec = 0;
-            ts.tv_nsec =  (long) step;
+            double elapsed_seconds = 0;
+            // double overhead_time = 0; 
 
-            nanosleep(&ts, NULL);  
+            // overhead_time = 1;
+            
+
+            while (elapsed_seconds < ((1.0 / ( (double) SAMPLE_RATE)) - (2 * get_time_bias) - (overhead_time) )) {
+                clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
+                elapsed_seconds = double(t_end.tv_sec  - t_start.tv_sec) + double(t_end.tv_nsec - t_start.tv_nsec) * 1e-9;
+                
+            }
         }
 
+        // overhead_start_time = std::chrono::high_resolution_clock::now();
         sample_count++;
     }
+
+    // if (data_packet_count == 4){
+    //     while(1){}
+    // }
+    
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t_overhead_start);
 
     return true;    
 }
@@ -520,8 +616,13 @@ SM wait_for_host_handshake( SM sm ){
             
 
             while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
+
+            int * sample_rate;
             
-            SAMPLE_RATE = (int) recvd_cmd;
+            sample_rate = (int *) recvd_cmd;
+
+            SAMPLE_RATE = *sample_rate;
+            printf("NEW SAMPLE RATE: %d\n", *sample_rate);
             
 
             use_ps_io_flag = true;
@@ -716,7 +817,8 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
 
 SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
-    start_time = std::chrono::high_resolution_clock::now();
+    // start_time = std::chrono::high_resolution_clock::now();
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t_data_collection_start);
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
 }
@@ -863,9 +965,8 @@ int main()
         return -1;
     }
 
-
-     chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
-    chrono::time_point<std::chrono::high_resolution_clock> t_out_end;
+    // chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
+    // chrono::time_point<std::chrono::high_resolution_clock> t_out_end;
 
     chrono::time_point<std::chrono::high_resolution_clock> t_in_start;
     chrono::time_point<std::chrono::high_resolution_clock> t_in_end; 
@@ -873,45 +974,47 @@ int main()
     double track_time = 0;
 
     for(int i = 0; i <10000; i++){
-        t_out_start = chrono::high_resolution_clock::now();
 
         t_in_start = chrono::high_resolution_clock::now();
         t_in_end = chrono::high_resolution_clock::now();
-        t_out_end = chrono::high_resolution_clock::now();
 
-        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+        track_time += convert_chrono_duration_to_double(t_in_start, t_in_end);
     }
 
-    printf("average_print_time: %f\n", track_time / 10000.0);
+    printf("chrono time bias: %f\n", track_time / 10000.0);
     chrono_time_bias = track_time / 10000.0;
 
     track_time = 0;
 
     // for(int i = 0; i <10000; i++){
     //     t_out_start = chrono::high_resolution_clock::now();
-    //     usleep(0);
+
+    //     ts.tv_sec = 0;
+    //     ts.tv_nsec =  0;
+
+    //     // printf("sample time: %f , sample delay time: %f\n", sample_processing_time, delay_for_target_sample_rate );
+
+    //     // nanosleep(&ts, NULL);  
+    //     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
     //     t_out_end = chrono::high_resolution_clock::now();
-    //     track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    //     track_time += convert_chrono_duration_to_double(t_out_start, t_out_end);
     // }
 
     // printf("average_usleep_time: %f\n", track_time / 10000.0);
-    // usleep_bias = track_time;
+    // usleep_bias = track_time / 10000.0;
 
-    for(int i = 0; i <10000; i++){
-        t_out_start = chrono::high_resolution_clock::now();
-
-        ts.tv_sec = 0;
-        ts.tv_nsec =  0;
-
-        // printf("sample time: %f , sample delay time: %f\n", sample_processing_time, delay_for_target_sample_rate );
-
-        nanosleep(&ts, NULL);  
-        t_out_end = chrono::high_resolution_clock::now();
-        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
+    const int N = 100000;
+    timespec a, b;
+    double total = 0.0;
+    for (int i = 0; i < N; ++i) {
+        clock_gettime(CLOCK_MONOTONIC_RAW, &a);
+        clock_gettime(CLOCK_MONOTONIC_RAW, &b);
+        total += double(b.tv_sec  - a.tv_sec)
+            + double(b.tv_nsec - a.tv_nsec) * 1e-9;
     }
+    get_time_bias = total / N;
+    printf("clock get time bias: %f\n", get_time_bias);
 
-    printf("average_usleep_time: %f\n", track_time / 10000.0);
-    usleep_bias = track_time / 10000.0;
     dataCollectionStateMachine();
 
     return 0;
