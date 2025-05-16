@@ -412,7 +412,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     // clock_gettime(CLOCK_MONOTONIC, &next_wakeup);
     // long period_ns = (long)(1e9 / SAMPLE_RATE);
 
-    double adjusted_sample_rate = ((double)SAMPLE_RATE) / 0.9236  ;
+    // double adjusted_sample_rate = ((double)SAMPLE_RATE) / 0.9236  ;
     // double Tp    = 1.0 / (double) SAMPLE_RATE;  // ideal period (s)
     // double Kp    = .12;              // proportional gain (tune this)
     // double Tnext = Tp;               // next absolute deadline
@@ -525,11 +525,12 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             // overhead_time = 1;
             
 
-            while (elapsed_seconds < ((1.0 / ( (double) SAMPLE_RATE)) - (2 * get_time_bias) - (overhead_time) )) {
+            while (elapsed_seconds < ((1.0 / ( (double) SAMPLE_RATE)) - (2 * get_time_bias) - (overhead_time) + (overhead_time/4))) {
                 clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
                 elapsed_seconds = double(t_end.tv_sec  - t_start.tv_sec) + double(t_end.tv_nsec - t_start.tv_nsec) * 1e-9;
                 
             }
+
         }
 
         // overhead_start_time = std::chrono::high_resolution_clock::now();
