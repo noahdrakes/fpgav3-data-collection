@@ -103,10 +103,23 @@ int sample_count = 0;
 // for emio timeout error
 int32_t emio_read_error_counter = 0; 
 
-// start time for data collection timestamps
-std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
-float last_timestamp = 0;
+// last timestamp from last capture
+double last_timestamp = 0;
+
+// timespec vaiables for getting timestamp using gettime() method
+// with CLOCK_MONOTONIC_RAW. 
+
+timespec t_data_collection_start;
+
+// keeps track of deadline to control sample rate
+timespec deadline;
+
+// expected period of sample capture
+long period_ns;
+
+// global sample rate variable to change sample rate
+int SAMPLE_RATE = 0;
+bool useSampleRate = false;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -145,8 +158,6 @@ struct UDP_Info {
     struct sockaddr_in Addr;
     socklen_t AddrLen;
 } udp_host; // this is global bc there will only be one
-
-
 
 
 static int mio_mmap_init()
@@ -332,18 +343,19 @@ static uint16_t calculate_quadlets_per_packet(uint8_t num_encoders, uint8_t num_
     return (calculate_samples_per_packet(num_encoders, num_motors) * calculate_quadlets_per_sample(num_encoders, num_motors));
 }
 
-// returns the duration between start and end using the chrono
-static float convert_chrono_duration_to_float(chrono::high_resolution_clock::time_point start, chrono::high_resolution_clock::time_point end )
-{
-    std::chrono::duration<float> duration = end - start;
-    return duration.count();
+// Compute elapsed seconds between two timespecs
+static double ts_diff_s(const timespec &start, const timespec &end) {
+    time_t  dsec  = end.tv_sec  - start.tv_sec;
+    long    dnsec = end.tv_nsec - start.tv_nsec;
+    return double(dsec) + double(dnsec) * 1e-9;
 }
 
 // loads data buffer for data collection
     // size of the data buffer is dependent on encoder count and motor count
     // see calculate_quadlets_per_sample method for data formatting
 static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_packet, uint8_t num_encoders, uint8_t num_motors)
-{
+{   
+
     if (data_packet == NULL) {
         cout << "[ERROR - load_data_packet] databuffer pointer is null" << endl;
         return false;
@@ -358,7 +370,10 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     uint16_t count = 0;
 
     // CAPTURE DATA 
-    for (int i = 0; i < samples_per_packet; i++) {
+    for (int j = 0; j < samples_per_packet; j++) {
+
+        timespec t0;
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
 
         if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
@@ -370,12 +385,12 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             return false;
         }
 
-        // DATA 1: timestamp
-        end_time = std::chrono::high_resolution_clock::now();
-        float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
+        double time_elapsed = ts_diff_s(t_data_collection_start, t0);
+
         last_timestamp = time_elapsed;
 
-        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
+        float time_elapsed_float = static_cast<float>(time_elapsed);
+        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed_float);
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
@@ -400,7 +415,24 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
         }
+
         
+        if (useSampleRate){
+            
+            deadline.tv_nsec += period_ns;
+            if (deadline.tv_nsec >= 1'000'000'000) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1'000'000'000;
+            }
+
+            // 4) busy spin until deadline, subtracting work_ns if you like
+            timespec now;
+            do {
+                clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+            } while ((  now.tv_sec  < deadline.tv_sec) ||
+                        (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec));
+        }
+
         sample_count++;
     }
 
@@ -463,6 +495,28 @@ SM wait_for_host_handshake( SM sm ){
         
         else if (strcmp(recvd_cmd, HOST_READY_CMD_W_PS_IO) == 0){
             cout << "Received Message - " <<  HOST_READY_CMD_W_PS_IO << endl;
+            use_ps_io_flag = true;
+
+            // special case: need to resize double_buffer size to account
+            // for extra ps io data
+            reset_double_buffer_info(&db, dvrk_controller.Board); 
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }
+
+        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_SAMPLE_RATE) == 0){
+            cout << "Received Message - " <<  HOST_READY_CMD_W_SAMPLE_RATE << endl;
+            useSampleRate = true;
+            
+
+            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
+
+            int * sample_rate;
+            
+            sample_rate = (int *) recvd_cmd;
+
+            SAMPLE_RATE = *sample_rate;
+            printf("NEW SAMPLE RATE: %d\n", *sample_rate);
+
             use_ps_io_flag = true;
 
             // special case: need to resize double_buffer size to account
@@ -654,8 +708,16 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
 }
 
 SM start_data_collection(SM sm){
+
     stop_data_collection_flag = false;
-    start_time = std::chrono::high_resolution_clock::now();
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t_data_collection_start);
+
+    if (useSampleRate){
+        clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
+        // compute the nanoseconds between samples
+        period_ns = 1'000'000'000L / SAMPLE_RATE;
+    }
+   
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
 }

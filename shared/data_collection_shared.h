@@ -24,6 +24,7 @@ http://www.cisst.org/cisst/license.txt.
 
 const unsigned int MAX_NUM_ENCODERS = 8;
 const unsigned int MAX_NUM_MOTORS = 10;
+// const unsigned int MAX_NUM_FT_READINGS = 6;
 
 // Default MTU=1500 (does not count 18 bytes for Ethernet frame header and CRC)
 const unsigned int MTU_DEFAULT = 1500;
@@ -39,6 +40,8 @@ const unsigned int UDP_MAX_QUADLET_PER_PACKET = UDP_REAL_MTU/4;
 
 // Arbitrary, used as a const for consistency. Can be changed later
 const unsigned int CMD_MAX_STRING_SIZE = 100;
+
+const unsigned int FORCE_SAMPLE_NUM_DEGREES = 3;
 
 // Data collection meta-data
 struct DataCollectionMeta {
@@ -62,6 +65,7 @@ enum StateMachineReturnCodes {
     SM_OUT_OF_SYNC,
     SM_UDP_INVALID_HOST_ADDR,
     SM_FAILED_TO_CREATE_THREAD,
+    SM_FORCE_SENSOR_FAIL,
 };
 
 // Commands Sent between Host and Zynq
@@ -69,6 +73,7 @@ enum StateMachineReturnCodes {
     #define HOST_START_DATA_COLLECTION                      "HOST: START DATA COLLECTION"
     #define HOST_READY_CMD                                  "HOST: READY FOR DATA COLLECTION"
     #define HOST_READY_CMD_W_PS_IO                          "HOST: READY FOR DATA COLLECTION - WITH PS IO"
+    #define HOST_READY_CMD_W_SAMPLE_RATE                    "HOST: READY FOR DATA COLLECTION - WITH SAMPLE RATE"
     #define HOST_RECVD_METADATA                             "HOST: RECEIVED METADATA"
     #define HOST_STOP_DATA_COLLECTION                       "HOST: STOP DATA COLLECTION"
     #define HOST_TERMINATE_SERVER                           "HOST: TERMINATE SERVER"
