@@ -402,7 +402,8 @@ bool DataCollection :: start()
         return 1;
     }
 
-    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {cout << "clearing udp packet buffer" <<std::endl;}
+    // clearing udp buffer of remaining packets not captured during data collection
+    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {}
 
     return true;
 }
@@ -420,12 +421,7 @@ bool DataCollection :: stop()
 
     stop_data_collection_flag = true;
 
-    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {cout << "we clearing" <<std::endl;}
-
     pthread_join(collect_data_t, nullptr);
-
-    // clear the udp buffer by reading until the buffer is empty
-    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {cout << "we clearing 1" <<std::endl;}
 
     myFile.close();
 
@@ -441,8 +437,6 @@ bool DataCollection :: stop()
     collect_data_ret = true;
 
     usleep(1000);
-
-    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {cout << "we clearing 2" <<std::endl;}
 
     return true;
 }

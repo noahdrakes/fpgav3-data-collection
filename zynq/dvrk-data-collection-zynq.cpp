@@ -103,25 +103,23 @@ int sample_count = 0;
 // for emio timeout error
 int32_t emio_read_error_counter = 0; 
 
-// start time for data collection timestamps
-double usleep_bias = 0; 
-double chrono_time_bias = 0;
+// last timestamp from last capture
 double last_timestamp = 0;
 
+// timespec vaiables for getting timestamp using gettime() method
+// with CLOCK_MONOTONIC_RAW. 
+
 timespec t_data_collection_start;
+
+// keeps track of deadline to control sample rate
 timespec deadline;
+
+// expected period of sample capture
 long period_ns;
 
+// global sample rate variable to change sample rate
 int SAMPLE_RATE = 0;
 bool useSampleRate = false;
-double get_time_bias = 0;
-double last_time_diff = 0;
-
-
-// uint16_t target_sample_rate = 2000;
-// struct timespec ts;
-
-double timestamp_offset;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
