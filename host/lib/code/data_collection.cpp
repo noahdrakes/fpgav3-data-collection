@@ -220,7 +220,7 @@ void DataCollection::process_and_write_data() {
         }
 
         for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << static_cast<int16_t>(proc_sample.motor_status[j]);
+            myFile << static_cast<uint16_t>(proc_sample.motor_status[j]);
             if (j < dc_meta.num_motors - 1) myFile << ",";
         }
 
