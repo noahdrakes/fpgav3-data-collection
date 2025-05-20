@@ -56,19 +56,11 @@ static string return_filename()
     time_t t = time(NULL);
     struct tm* ptr = localtime(&t);
 
-    string date_and_time = asctime(ptr);
-    date_and_time.pop_back(); // remove newline character
+    char buffer[32];
+    // Format: MM-DD-YYYY_HHMMSS
+    strftime(buffer, sizeof(buffer), "capture_%m-%d-%Y_%H%M%S.csv", ptr);
 
-    string filename("capture_" + date_and_time + ".csv");
-
-    for (int i = 0; i < filename.length();i++) {
-
-        if (filename[i] == ' '){
-            filename[i] = '_';
-        } 
-    }
-
-    return filename;
+    return string(buffer);
 }
 
 static void hwVersToString(uint32_t val, char *str)
