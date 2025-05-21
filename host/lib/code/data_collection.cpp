@@ -450,9 +450,6 @@ bool DataCollection :: stop()
 
     pthread_join(collect_data_t, nullptr);
 
-    // clear the udp buffer by reading until the buffer is empty
-    while (udp_nonblocking_receive(sock_id, data_packet, dc_meta.data_packet_size) > 0) {}
-
     myFile.close();
 
     curr_time.end = std::chrono::high_resolution_clock::now();

@@ -107,32 +107,22 @@ int sample_count = 0;
 int32_t emio_read_error_counter = 0; 
 
 // start time for data collection timestamps
-double usleep_bias = 0; 
-double chrono_time_bias = 0;
 double last_timestamp = 0;
 
-// start time for data collection timestamps
-std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> end_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> d_start_time;
-std::chrono::time_point<std::chrono::high_resolution_clock> d_end_time;
+// timespec vaiables for getting timestamp using gettime() method
+// with CLOCK_MONOTONIC_RAW. 
 
-chrono::time_point<std::chrono::high_resolution_clock> sample_start_time;
-chrono::time_point<std::chrono::high_resolution_clock> sample_end_time;
+timespec t_data_collection_start;
 
-chrono::time_point<std::chrono::high_resolution_clock> sample_very_end_time;
+// keeps track of deadline to control sample rate
+timespec deadline;
 
-chrono::time_point<std::chrono::high_resolution_clock> overhead_start_time;
-chrono::time_point<std::chrono::high_resolution_clock> overhead_end_time;
+// expected period of sample capture
+long period_ns;
+
 
 int SAMPLE_RATE = 0;
 bool useSampleRate = false;
-
-// uint16_t target_sample_rate = 2000;
-struct timespec ts;
-double timestamp_offset;
-
-float fs_time_elapsed = 0;
 
 // FLAG set when the host terminates data collection
 bool stop_data_collection_flag = false;
@@ -172,15 +162,13 @@ enum FS_RETURN_CODES  {
 };
 
 // Socket Data struct
-typedef struct {
+struct UDP_Info {
     int socket;
-    struct sockaddr_in Addr;        // Destination address (used for sending)
+    struct sockaddr_in Addr;
     socklen_t AddrLen;
-    struct sockaddr_in last_sender; // Store last sender dynamically (new field)
-} UDP_Info;
+};
 
-
-UDP_Info udp_host, udp_fs;
+struct UDP_Info udp_host, udp_fs;
 
 // FORCE SENSOR 
 
@@ -523,14 +511,6 @@ static bool initiate_socket_connection()
 }
 
 
-static double calculate_sample_rate_delay(uint16_t target_sample_rate, double sample_processing_time) {
-    double period = 1.0 / target_sample_rate;
-    double delay = period - sample_processing_time;
-
-    return (delay > 0.0) ? delay : 0.0;
-}
-
-
 // calculate the size of a sample in quadlets
 static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_motors)
 {
@@ -565,12 +545,12 @@ static uint16_t calculate_quadlets_per_packet(uint8_t num_encoders, uint8_t num_
     return (calculate_samples_per_packet(num_encoders, num_motors) * calculate_quadlets_per_sample(num_encoders, num_motors));
 }
 
-// returns the duration between start and end using the chrono
-static float convert_chrono_duration_to_float(chrono::high_resolution_clock::time_point start, chrono::high_resolution_clock::time_point end )
-{
-    std::chrono::duration<float> duration = end - start;
-    return duration.count();
+static double ts_diff_s(const timespec &start, const timespec &end) {
+    time_t  dsec  = end.tv_sec  - start.tv_sec;
+    long    dnsec = end.tv_nsec - start.tv_nsec;
+    return double(dsec) + double(dnsec) * 1e-9;
 }
+
 
 // loads data buffer for data collection
     // size of the data buffer is dependent on encoder count and motor count
@@ -593,7 +573,8 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     // CAPTURE DATA 
     for (int i = 0; i < samples_per_packet; i++) {
 
-        sample_start_time = chrono::high_resolution_clock::now();
+        timespec t0;
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
 
         if (!dvrk_controller.Port->ReadAllBoards()) {
             emio_read_error_counter++;
@@ -606,11 +587,12 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         }
 
         // DATA 1: timestamp
-        end_time = std::chrono::high_resolution_clock::now();
-        float time_elapsed = convert_chrono_duration_to_float(start_time, end_time);
+        double time_elapsed = ts_diff_s(t_data_collection_start, t0);
+
         last_timestamp = time_elapsed;
 
-        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed);
+        float time_elapsed_float = static_cast<float>(time_elapsed);
+        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed_float);
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
@@ -650,7 +632,6 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         force_sensor[2] -= FS_Z_BIAS;
                 // d_end_time = std::chrono::high_resolution_clock::now();
 
-        // fs_time_elapsed += convert_chrono_duration_to_float(d_start_time, d_end_time);
          
         if(fs_ret == FS_NO_DATA_AVAILABLE){
 
@@ -664,7 +645,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
            }
         } else if (fs_ret == FS_FAIL){
-            cout << "[ERROR] Failed to grab darta from force sensor" << endl;
+            cout << "[ERROR] Failed to grab data from force sensor" << endl;
             return false;
         }
  
@@ -675,16 +656,18 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         }
 
         if (useSampleRate){
-            sample_end_time = std::chrono::high_resolution_clock::now();
-            double sample_processing_time = convert_chrono_duration_to_float(sample_start_time, sample_end_time) + usleep_bias + chrono_time_bias;
+            deadline.tv_nsec += period_ns;
+            if (deadline.tv_nsec >= 1'000'000'000) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1'000'000'000;
+            }
 
-            double delay_for_target_sample_rate = calculate_sample_rate_delay(SAMPLE_RATE, sample_processing_time);
-            double step = (delay_for_target_sample_rate * 1000000000.0);
-
-            ts.tv_sec = 0;
-            ts.tv_nsec =  (long) step;
-
-            nanosleep(&ts, NULL);  
+            // 4) busy spin until deadline, subtracting work_ns if you like
+            timespec now;
+            do {
+                clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+            } while ((  now.tv_sec  < deadline.tv_sec) ||
+                        (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec));
         }
         
         sample_count++;
@@ -923,7 +906,6 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "EMIO ERROR COUNT: " << emio_read_error_counter << endl;
             cout << "TIME ELAPSED: " << last_timestamp << endl;
             cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
-            cout << "AVERAGE FORCE SENSOR reading time: " << fs_time_elapsed/sample_count << endl;
             cout << "------------------------------------------------" << endl << endl;
 
             emio_read_error_counter = 0; 
@@ -951,18 +933,15 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
 
 SM start_data_collection(SM sm){
     stop_data_collection_flag = false;
-    start_time = std::chrono::high_resolution_clock::now();
-    sm.state = SM_START_CONSUMER_THREAD;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t_data_collection_start);
 
-    // force_sensor_stop_streaming();
-    int fs_ok = force_sensor_start_streaming();
-
-    if (fs_ok == FS_FAIL){
-        cout << "[ERROR] Fail to start force sensor streaming" << endl;
-        sm.ret = SM_BOARD_ERROR;
-        sm.state = SM_EXIT;
+    if (useSampleRate){
+        clock_gettime(CLOCK_MONOTONIC_RAW, &deadline);
+        // compute the nanoseconds between samples
+        period_ns = 1'000'000'000L / SAMPLE_RATE;
     }
-
+   
+    sm.state = SM_START_CONSUMER_THREAD;
     return sm;
 }
 
@@ -1127,46 +1106,6 @@ int main()
     dvrk_controller.Board = new AmpIO(dvrk_controller.Port->GetBoardId(0));
 
     dvrk_controller.Port->AddBoard(dvrk_controller.Board);
-
-
-    chrono::time_point<std::chrono::high_resolution_clock> t_out_start;
-    chrono::time_point<std::chrono::high_resolution_clock> t_out_end;
-
-    chrono::time_point<std::chrono::high_resolution_clock> t_in_start;
-    chrono::time_point<std::chrono::high_resolution_clock> t_in_end; 
-
-    double track_time = 0;
-
-    for(int i = 0; i <10000; i++){
-        t_out_start = chrono::high_resolution_clock::now();
-
-        t_in_start = chrono::high_resolution_clock::now();
-        t_in_end = chrono::high_resolution_clock::now();
-        t_out_end = chrono::high_resolution_clock::now();
-
-        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
-    }
-
-    printf("average_print_time: %f\n", track_time / 10000.0);
-    chrono_time_bias = track_time / 10000.0;
-
-    track_time = 0;
-
-    for(int i = 0; i <10000; i++){
-        t_out_start = chrono::high_resolution_clock::now();
-
-        ts.tv_sec = 0;
-        ts.tv_nsec =  0;
-
-        nanosleep(&ts, NULL);  
-        t_out_end = chrono::high_resolution_clock::now();
-        track_time += convert_chrono_duration_to_float(t_out_start, t_out_end);
-    }
-
-    printf("average_usleep_time: %f\n", track_time / 10000.0);
-    usleep_bias = track_time / 10000.0;
-
-    
 
     dataCollectionStateMachine();
 
