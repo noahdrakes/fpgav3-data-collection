@@ -317,7 +317,7 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
 
     // 1 quadlet = 4 bytes
 
-    // Timestamp (32 bit)                                                           [1 quadlet]
+    // Timestamp (Double -> 64 bits stored as two seperate quadlets)                                                           [1 quadlet]
     // Encoder Position (32 * num of encoders)                                      [1 quadlet * num of encoders]
     // Encoder Velocity Predicted (64 * num of encoders -> truncated to 32bits)     [1 quadlet * num of encoders]
     // Motur Current and Motor Status (32 * num of Motors -> each are 16 bits)      [1 quadlet * num of motors]
