@@ -22,6 +22,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <fstream>
 #include <string>
 #include <pthread.h>
+#include <iomanip>
 
 #include "udp_tx.h"
 #include "data_collection.h"
@@ -86,7 +87,13 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
 
     int idx = start_idx;
 
-    proc_sample.timestamp = *reinterpret_cast<float *> (&data_packet[idx++]);
+
+    uint64_t timestamp_high = data_packet[idx++];
+    uint32_t timestamp_low = data_packet[idx++];
+
+    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | (timestamp_low);
+
+    proc_sample.timestamp = *reinterpret_cast<double *>(&raw_64bit_timestamp);
 
     for (int i = 0; i < dc_meta.num_encoders; i++) {
         proc_sample.encoder_position[i] = *reinterpret_cast<int32_t *> (&data_packet[idx++]);
@@ -207,7 +214,7 @@ void DataCollection::process_and_write_data() {
     for (int i = 0; i < dc_meta.data_packet_size / 4; i += dc_meta.size_of_sample) {
         process_sample(data_packet, i);
 
-        myFile << proc_sample.timestamp << ",";
+        myFile << setprecision(12) << proc_sample.timestamp << ",";
 
         for (int j = 0; j < dc_meta.num_encoders; j++) {
             myFile << proc_sample.encoder_position[j] << ",";

@@ -51,7 +51,7 @@ class DataCollection {
         };
 
         struct ProcessedSample {
-            float timestamp;
+            double timestamp;
             int32_t encoder_position[MAX_NUM_ENCODERS];
             float encoder_velocity[MAX_NUM_ENCODERS];
             uint16_t motor_current[MAX_NUM_MOTORS];
