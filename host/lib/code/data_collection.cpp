@@ -213,7 +213,7 @@ void DataCollection::process_and_write_data() {
     for (int i = 0; i < dc_meta.data_packet_size / 4; i += dc_meta.size_of_sample) {
         process_sample(data_packet, i);
 
-        myFile << proc_sample.timestamp << ",";
+        myFile << std::setprecision(17) << proc_sample.timestamp << ",";
 
         for (int j = 0; j < dc_meta.num_encoders; j++) {
             myFile << proc_sample.encoder_position[j] << ",";
