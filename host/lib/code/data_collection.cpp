@@ -86,7 +86,15 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
 
     int idx = start_idx;
 
-    proc_sample.timestamp = *reinterpret_cast<float *> (&data_packet[idx++]);
+
+    uint64_t timestamp_high = data_packet[idx++];
+    uint32_t timestamp_low = data_packet[idx++];
+
+    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | (timestamp_low);
+
+    uint64_t timestamp_uint64 = *reinterpret_cast<uint64_t *>(&raw_64bit_timestamp);
+
+    proc_sample.timestamp = static_cast<double> (timestamp_uint64);
 
     for (int i = 0; i < dc_meta.num_encoders; i++) {
         proc_sample.encoder_position[i] = *reinterpret_cast<int32_t *> (&data_packet[idx++]);

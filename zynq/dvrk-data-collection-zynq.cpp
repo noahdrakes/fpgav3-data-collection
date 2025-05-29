@@ -324,9 +324,9 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     // Digtial IO Values  (optional, used if PS IO is enabled ) 32 bits             [1 quadlet * digital IO]
     // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]                  
     if (use_ps_io_flag){
-        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors));
+        return (2 + 1 + 1 + (2*(num_encoders)) + (num_motors));
     } else {
-        return (1 + (2*(num_encoders)) + (num_motors));
+        return (2 + (2*(num_encoders)) + (num_motors));
     }
     
 }
@@ -389,8 +389,14 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         last_timestamp = time_elapsed;
 
-        float time_elapsed_float = static_cast<float>(time_elapsed);
-        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed_float);
+        uint64_t timestamp_uint64 = *reinterpret_cast<uint64_t *>(&time_elapsed);
+
+        uint32_t timestamp_high = (timestamp_uint64  >> 32);
+        uint32_t timestamp_low =  (uint32_t) (timestamp_uint64 & 0xFFFFFFFF);
+
+        // float time_elapsed_float = static_cast<float>(time_elapsed);
+        data_packet[count++] = timestamp_high;
+        data_packet[count++] = timestamp_low;
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
