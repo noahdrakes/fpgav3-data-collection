@@ -744,11 +744,25 @@ SM wait_for_host_handshake( SM sm ){
             cout << "Received Message - " <<  HOST_READY_CMD_W_SAMPLE_RATE << endl;
             useSampleRate = true;
             
-            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
-            
-            SAMPLE_RATE = (int) recvd_cmd;
 
-        } else {
+            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
+
+            int * sample_rate;
+            
+            sample_rate = (int *) recvd_cmd;
+
+            SAMPLE_RATE = *sample_rate;
+            printf("NEW SAMPLE RATE: %d\n", *sample_rate);
+
+            use_ps_io_flag = true;
+
+            // special case: need to resize double_buffer size to account
+            // for extra ps io data
+            reset_double_buffer_info(&db, dvrk_controller.Board); 
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }
+
+        else {
             sm.ret = SM_OUT_OF_SYNC;
             sm.last_state = sm.state;
             sm.state = SM_TERMINATE;
@@ -765,6 +779,7 @@ SM wait_for_host_handshake( SM sm ){
 
     return sm;
 }
+
 
 SM send_data_collection_meta_data( SM sm ){
     package_meta_data(&data_collection_meta, dvrk_controller.Board);
