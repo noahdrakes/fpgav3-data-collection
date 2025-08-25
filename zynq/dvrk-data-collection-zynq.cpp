@@ -189,6 +189,9 @@ float last_fs_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
 float FS_X_BIAS = 0;
 float FS_Y_BIAS = 0;
 float FS_Z_BIAS = 0;
+float TORQUE_X_BIAS = 0;
+float TORQUE_Y_BIAS = 0;
+float TORQUE_Z_BIAS = 0;
 
 
 static int mio_mmap_init()
@@ -325,10 +328,10 @@ static int udp_transmit(UDP_Info *udp_info, void * data, int size)
 
 
 // Function to return force-torque sample (fully non-blocking)
-FS_RETURN_CODES return_force_sample_3dof(float (&real_force_sample)[FORCE_SAMPLE_NUM_DEGREES]) {
+FS_RETURN_CODES return_force_sample_6dof(float (&real_force_sample)[FORCE_SAMPLE_NUM_DEGREES]) {
     unsigned char response[36]; /* The raw response data received from the Net F/T. */
 
-    int32_t force_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
+    int32_t force_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0,0,0,0};
 
     // Non-blocking receive
     int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
@@ -441,23 +444,30 @@ int force_sensor_start_streaming(){
 
 void force_sensor_update_bias_values(){
 
-    float real_force_sample[3] = {0,0,0};
+    float real_force_sample[6] = {0,0,0,0,0,0};
 
     force_sensor_start_streaming();
 
     for (int i = 0; i < 1000; i++){
-        return_force_sample_3dof(real_force_sample);
+        return_force_sample_6dof(real_force_sample);
         FS_X_BIAS += real_force_sample[0];
         FS_Y_BIAS += real_force_sample[1];
         FS_Z_BIAS += real_force_sample[2];
+        TORQUE_X_BIAS += real_force_sample[3];
+        TORQUE_Y_BIAS += real_force_sample[4];
+        TORQUE_Z_BIAS += real_force_sample[5];
     }
 
     FS_X_BIAS /= (float)1000;
     FS_Y_BIAS /= (float)1000;
     FS_Z_BIAS /= (float)1000;
+    TORQUE_X_BIAS /= (float)1000;
+    TORQUE_Y_BIAS /= (float)1000;
+    TORQUE_Z_BIAS /= (float) 1000;
 
     cout << "FORCE SENSOR BIAS VALUES" << endl;
-    cout << "X_BIAS: " << FS_X_BIAS << ", Y_BIAS: " << FS_Y_BIAS << ", Z_BIAS: " << FS_Z_BIAS << endl;
+    cout << "FORCE_X_BIAS: " << FS_X_BIAS << ", FORCE_Y_BIAS: " << FS_Y_BIAS << ", FORCE_Z_BIAS: " << FS_Z_BIAS << endl;
+    cout << "TORQUE_X_BIAS: " << TORQUE_X_BIAS << ", TORQUE_Y_BIAS: " << TORQUE_Y_BIAS << ", TORQUE_Z_BIAS: " << TORQUE_Z_BIAS << endl;
 
     force_sensor_stop_streaming();
 }
@@ -526,9 +536,9 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
     // Force Torque Readings -> 6 * 32 bits                                         [1 quadlet * 6 Fore/Torque Readings]                 
     if (use_ps_io_flag){
-        return (1 + 1 + 1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+        return (2 + 1 + 1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
     } else {
-        return (1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+        return (2 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
     }
     
 }
@@ -591,8 +601,13 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         last_timestamp = time_elapsed;
 
-        float time_elapsed_float = static_cast<float>(time_elapsed);
-        data_packet[count++] = *reinterpret_cast<uint32_t *> (&time_elapsed_float);
+        uint64_t timestamp_uint64 = *reinterpret_cast<uint64_t *>(&time_elapsed);
+
+        uint32_t timestamp_high = (timestamp_uint64  >> 32);
+        uint32_t timestamp_low =  (uint32_t) (timestamp_uint64 & 0xFFFFFFFF);
+
+        data_packet[count++] = timestamp_high;
+        data_packet[count++] = timestamp_low;
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
@@ -625,7 +640,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         float force_sensor[FORCE_SAMPLE_NUM_DEGREES];
 
         // d_start_time = std::chrono::high_resolution_clock::now();
-        int fs_ret = return_force_sample_3dof(force_sensor);
+        int fs_ret = return_force_sample_6dof(force_sensor);
 
         force_sensor[0] -= FS_X_BIAS;
         force_sensor[1] -= FS_Y_BIAS;
@@ -1021,9 +1036,10 @@ static int dataCollectionStateMachine()
     init_force_sensor_connection();
 
     force_sensor_start_streaming();
+    cout << "start force sensor streaming" << endl;
     float sample[FORCE_SAMPLE_NUM_DEGREES];
 
-    if (return_force_sample_3dof(sample) == FS_FAIL){
+    if (return_force_sample_6dof(sample) == FS_FAIL){
         cout << "[ERROR] - Force sensor reading incorrect data. Check Initialization" << endl;
     } else {
         cout << "Initializing Force Sensor Success..." << endl;

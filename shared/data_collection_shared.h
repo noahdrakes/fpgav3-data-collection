@@ -41,7 +41,7 @@ const unsigned int UDP_MAX_QUADLET_PER_PACKET = UDP_REAL_MTU/4;
 // Arbitrary, used as a const for consistency. Can be changed later
 const unsigned int CMD_MAX_STRING_SIZE = 100;
 
-const unsigned int FORCE_SAMPLE_NUM_DEGREES = 3;
+const unsigned int FORCE_SAMPLE_NUM_DEGREES = 6;
 
 // Data collection meta-data
 struct DataCollectionMeta {
