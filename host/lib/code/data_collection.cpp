@@ -223,7 +223,7 @@ void DataCollection::write_csv_headers() {
                 myFile << "FORCE_" << i;
             }
             else {
-                myFile << "TORQUE_" << i;
+                myFile << "TORQUE_" << i - 3;
             }
             
         } 

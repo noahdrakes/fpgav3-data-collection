@@ -357,13 +357,6 @@ FS_RETURN_CODES return_force_sample_6dof(float (&real_force_sample)[FORCE_SAMPLE
         force_sample[i] = ntohl(*(int32_t*)&response[12 + i * 4]);
     }
 
-    // force_sample[0] -= FS_X_BIAS;
-    // force_sample[1] -= FS_Y_BIAS;
-    // force_sample[2] -= FS_Z_BIAS;
-    // force_sample[3] -= TORQUE_X_BIAS;
-    // force_sample[4] -= TORQUE_Y_BIAS;
-    // force_sample[5] -= TORQUE_Z_BIAS;
-
     convert_force_torque(force_sample, real_force_sample);
 
     
@@ -659,10 +652,17 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&last_fs_sample[i]);
            }
         } else if (fs_ret == FS_SUCCESS) {
-            memcpy( last_fs_sample, force_sensor, sizeof(last_fs_sample));
+            
+            force_sensor[0] -= FS_X_BIAS;
+            force_sensor[1] -= FS_Y_BIAS;
+            force_sensor[2] -= FS_Z_BIAS;
+            force_sensor[3] -= TORQUE_X_BIAS;
+            force_sensor[4] -= TORQUE_Y_BIAS;
+            force_sensor[5] -= TORQUE_Z_BIAS;
 
             for (unsigned int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++){
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&force_sensor[i]);
+                last_fs_sample[i] = force_sensor[i];
            }
         } else if (fs_ret == FS_FAIL){
             cout << "[ERROR] Failed to grab data from force sensor" << endl;
@@ -975,6 +975,8 @@ SM start_data_collection(SM sm){
         // compute the nanoseconds between samples
         period_ns = 1'000'000'000L / SAMPLE_RATE;
     }
+
+    force_sensor_start_streaming();
    
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
