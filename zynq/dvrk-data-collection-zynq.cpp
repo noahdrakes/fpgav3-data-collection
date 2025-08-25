@@ -357,6 +357,13 @@ FS_RETURN_CODES return_force_sample_6dof(float (&real_force_sample)[FORCE_SAMPLE
         force_sample[i] = ntohl(*(int32_t*)&response[12 + i * 4]);
     }
 
+    // force_sample[0] -= FS_X_BIAS;
+    // force_sample[1] -= FS_Y_BIAS;
+    // force_sample[2] -= FS_Z_BIAS;
+    // force_sample[3] -= TORQUE_X_BIAS;
+    // force_sample[4] -= TORQUE_Y_BIAS;
+    // force_sample[5] -= TORQUE_Z_BIAS;
+
     convert_force_torque(force_sample, real_force_sample);
 
     
@@ -642,9 +649,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // d_start_time = std::chrono::high_resolution_clock::now();
         int fs_ret = return_force_sample_6dof(force_sensor);
 
-        force_sensor[0] -= FS_X_BIAS;
-        force_sensor[1] -= FS_Y_BIAS;
-        force_sensor[2] -= FS_Z_BIAS;
+        
                 // d_end_time = std::chrono::high_resolution_clock::now();
 
          
