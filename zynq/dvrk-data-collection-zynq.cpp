@@ -412,8 +412,8 @@ void force_sensor_stop_streaming(){
 
 int force_sensor_start_streaming(){
     unsigned char response[36]; /* The raw response data received from the Net F/T. */
-    int COMMAND = 2;
-    int NUM_SAMPLES = 0;
+    int COMMAND = 3;
+    int NUM_SAMPLES = 1;
 
     *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
     *(uint16_t*)&request[2] = htons(COMMAND); /* Command code */
