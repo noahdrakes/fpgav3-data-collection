@@ -184,6 +184,11 @@ struct sockaddr_in addr;	/* Address of Net F/T. */
 struct hostent *he;			/* Host entry for Net F/T. */
 unsigned char request[8];			/* The request data sent to the Net F/T. */
 RESPONSE resp;				/* The structured response received from the Net F/T. */
+const unsigned int SIZEOF_RAW_FS_SAMPLE = 36;
+
+// FS COMMDANDS
+const unsigned int HIGH_SPEED_REAL_TIME_STREAMING_MODE = 0x0002;
+const unsigned int NUM_SAMPLES_INFINITE = 0x0000;
 
 float last_fs_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0};
 float FS_X_BIAS = 0;
@@ -304,6 +309,24 @@ int udp_nonblocking_receive(UDP_Info *udp_info, void *data, int size)
     }
 }
 
+// added for force sensor so it doesn't return old samples 
+int udp_receive_latest(UDP_Info *udp_info, void *data, int size) {
+    int ret = 0;
+    int latest_ret = 0;
+
+    // keep draining until no more packets
+    do {
+        ret = recvfrom(udp_info->socket, data, size, 0,
+                       (struct sockaddr *)&udp_info->Addr,
+                       &udp_info->AddrLen);
+        if (ret > 0) {
+            latest_ret = ret;  // overwrite with freshest
+        }
+    } while (ret > 0);
+
+    return latest_ret;  // 0 if no packet received, >0 = freshest bytes
+}
+
 void convert_force_torque(int32_t raw_counts[FORCE_SAMPLE_NUM_DEGREES], float (&forces)[FORCE_SAMPLE_NUM_DEGREES]) {
     // Scaling Factors from Calibration Config
     // const float scaling_factors[6] = {6104, 6104, 6104, 153, 153, 153};
@@ -329,15 +352,17 @@ static int udp_transmit(UDP_Info *udp_info, void * data, int size)
 
 // Function to return force-torque sample (fully non-blocking)
 FS_RETURN_CODES return_force_sample_6dof(float (&real_force_sample)[FORCE_SAMPLE_NUM_DEGREES]) {
-    unsigned char response[36]; /* The raw response data received from the Net F/T. */
+    unsigned char response[SIZEOF_RAW_FS_SAMPLE]; /* The raw response data received from the Net F/T. */
 
     int32_t force_sample[FORCE_SAMPLE_NUM_DEGREES] = {0,0,0,0,0,0};
 
     // Non-blocking receive
-    int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
+    // int received_bytes = udp_nonblocking_receive(&udp_fs, response, sizeof(response));
 
+    //udp return latest
+    int received_bytes = udp_receive_latest(&udp_fs, response, sizeof(response));
     // If no data is available, return false and do nothing
-    if (received_bytes == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || received_bytes <= 0) {
+    if (received_bytes <= 0) {
         return FS_NO_DATA_AVAILABLE;
     }
 
@@ -376,6 +401,12 @@ void init_force_sensor_connection() {
         exit(1);
     }
 
+    // shrink receive buffer to only a few packets (for freshness)
+    int bufsize = SIZEOF_RAW_FS_SAMPLE * 4; // enough for ~4 samples worth of data
+    if (setsockopt(udp_fs.socket, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize)) < 0) {
+        perror("[ERROR] Failed to set receive buffer size");
+    }
+
     // Set socket to non-blocking mode
     // fcntl(udp_fs.socket, F_SETFL, O_NONBLOCK);
     // ✅ Enable Non-Blocking Mode
@@ -411,13 +442,13 @@ void force_sensor_stop_streaming(){
 }
 
 int force_sensor_start_streaming(){
-    unsigned char response[36]; /* The raw response data received from the Net F/T. */
-    int COMMAND = 3;
-    int NUM_SAMPLES = 1;
+    unsigned char response[SIZEOF_RAW_FS_SAMPLE]; /* The raw response data received from the Net F/T. */
+    int command = HIGH_SPEED_REAL_TIME_STREAMING_MODE;
+    int num_samples = NUM_SAMPLES_INFINITE;
 
     *(uint16_t*)&request[0] = htons(0x1234);  /* Standard header */
-    *(uint16_t*)&request[2] = htons(COMMAND); /* Command code */
-    *(uint32_t*)&request[4] = htonl(NUM_SAMPLES); /* Number of samples */
+    *(uint16_t*)&request[2] = htons(command); /* Command code */
+    *(uint32_t*)&request[4] = htonl(num_samples); /* Number of samples */
     // *(uint32_t*)&request[4] = htonl(0);
 
     udp_transmit(&udp_fs, request, 8);
