@@ -55,13 +55,15 @@ where N is the Board ID. The executable will appear in ~/media.
 - Start the Host program by cd'ing into the `bin` folder inside the build tree and run:
 
 ```
-        ./dvrk-data-collection-host <boardID> [-t <seconds>] [-i]
+        ./dvrk-data-collection-host <boardID> [-t <seconds>] [-i] [-s <sample_rate>]
 ```
 
 Where:
 -    -t enables timed capture mode 
 
 -    -i enables PS IO and FPGA digital I/O to be included in data collection CSV
+
+-    -s allows you to control the sample rate of data collection in Hz.   
 
 The host program output will guide you on how to collect data.
 
