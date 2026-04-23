@@ -27,6 +27,11 @@ http://www.cisst.org/cisst/license.txt.
 #include <atomic>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <config_loader.h>
+#include <robot_config.h>
+#include <nlohmann/json.hpp>
+#include "unit_conversion.h"
+
 
 
 // mmap mio pins
