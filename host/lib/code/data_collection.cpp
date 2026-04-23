@@ -22,6 +22,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <fstream>
 #include <string>
 #include <pthread.h>
+#include <iomanip>
 
 #include "udp_tx.h"
 #include "data_collection.h"
@@ -56,19 +57,10 @@ static string return_filename()
     time_t t = time(NULL);
     struct tm* ptr = localtime(&t);
 
-    string date_and_time = asctime(ptr);
-    date_and_time.pop_back(); // remove newline character
-
-    string filename("capture_" + date_and_time + ".csv");
-
-    for (int i = 0; i < filename.length();i++) {
-
-        if (filename[i] == ' '){
-            filename[i] = '_';
-        } 
-    }
-
-    return filename;
+    char buffer[32];
+    // Format: MM-DD-YYYY_HHMMSS
+    strftime(buffer, sizeof(buffer), "capture_%m-%d-%Y_%H%M%S.csv", ptr);
+    return string(buffer);
 }
 
 static void hwVersToString(uint32_t val, char *str)
@@ -123,7 +115,12 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
         proc_sample.digital_io = data_packet[idx++];
         proc_sample.mio_pins = data_packet[idx++];
     }
-    
+
+    if (use_pot){
+        for (int i = 0; i < dc_meta.num_motors; i++){
+            proc_sample.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
+        }
+    }
 }
 
 int DataCollection::collect_data() {
@@ -237,6 +234,12 @@ void DataCollection::write_csv_headers() {
         myFile << ",DIGITAL_IO,MIO_PINS";
     }
 
+    if (use_pot){
+        for (int i = 1; i <= dc_meta.num_motors; i++){
+            myFile << ",POT_" << i;
+        }
+    }
+
     myFile << std::endl;
 }
 
@@ -245,7 +248,7 @@ void DataCollection::process_and_write_data() {
         // cout << "packet: " << i << endl;
         process_sample(data_packet, i);
 
-        myFile << proc_sample.timestamp << ",";
+        myFile << setprecision(12) << proc_sample.timestamp << ",";
 
         for (int j = 0; j < dc_meta.num_encoders; j++) {
             myFile << proc_sample.encoder_position[j] << ",";
@@ -278,6 +281,14 @@ void DataCollection::process_and_write_data() {
 
         if (use_ps_io) {
             myFile << "," << proc_sample.digital_io << "," << proc_sample.mio_pins;
+        }
+
+        if (use_pot) {
+            myFile << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++) {
+                myFile << proc_sample.pot_values[j];
+                if (j < dc_meta.num_motors - 1) myFile << ",";
+            }
         }
 
         myFile << std::endl;
@@ -332,41 +343,42 @@ DataCollection::DataCollection()
 
 // TODO: need to add useful return statements -> all the close socket cases are just returns
 // make sure logic checks out 
-bool DataCollection :: init(uint8_t boardID, bool usePSIO, bool useSampleRate, int sample_rate)
+bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rate)
 {
     if(!udp_init(&sock_id, boardID)) {
         return false;
     }
 
-    if(useSampleRate){
-        use_sample_rate = true; 
-    }
+    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK;
+    options_mask = optionsMask & supported_mask;
 
+    use_ps_io = (options_mask & ENABLE_PSIO_MSK) != 0;
+    use_pot = (options_mask & ENABLE_POT_MSK) != 0;
+    use_sample_rate = (options_mask & ENABLE_SAMPLE_RATE_MSK) != 0;
+
+    if (use_sample_rate) {
+        this->sample_rate = static_cast<uint16_t>(sample_rate);
+    }
 
     sm_state = SM_SEND_READY_STATE_TO_PS;
     int ret_code = 0;
 
     char recvBuffer[100] = {0};
 
-    bool error_flag = false;
-
-    use_ps_io = usePSIO;
-
     // Handshaking PS
     while(1) {
         switch(sm_state) {
             case SM_SEND_READY_STATE_TO_PS:
-
-                if (use_ps_io){
-                    udp_transmit(sock_id, (char *)HOST_READY_CMD_W_PS_IO, sizeof(HOST_READY_CMD_W_PS_IO));
-                
-                } else if (use_sample_rate){
-                        udp_transmit(sock_id, (char *)HOST_READY_CMD_W_SAMPLE_RATE, sizeof(HOST_READY_CMD_W_SAMPLE_RATE));
-                        udp_transmit(sock_id, (void *) &sample_rate, sizeof(sample_rate));
-                } else {
+                {
                     udp_transmit(sock_id, (char *)HOST_READY_CMD, sizeof(HOST_READY_CMD));
+                    udp_transmit(sock_id, (char *)HOST_FLAG_CMD, sizeof(HOST_FLAG_CMD));
+                    udp_transmit(sock_id, (void *)&options_mask, sizeof(options_mask));
+
+                    if (use_sample_rate){
+                        udp_transmit(sock_id, (char *)HOST_SAMPLE_RATE_CMD, sizeof(HOST_SAMPLE_RATE_CMD));
+                        udp_transmit(sock_id, (int *) &sample_rate, sizeof(sample_rate));
+                    }
                 }
-                
                 sm_state = SM_RECV_DATA_COLLECTION_META_DATA;
                 break;
 

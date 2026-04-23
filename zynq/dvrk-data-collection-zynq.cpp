@@ -59,6 +59,8 @@ volatile uint32_t *GPIO_MEM_REGION;
 
 // FLAG for including Processor IO in data packets
 bool use_ps_io_flag = false;
+// FLAG for including joint Potentiometer readings in data packets
+bool use_pot_flag = true;
 
 ///////////////////////////////////
 ///// STATE MACHINE VARIABLES /////
@@ -132,6 +134,10 @@ enum DataCollectionStateMachine {
     SM_READY = 0,
     SM_SEND_READY_STATE_TO_HOST,
     SM_WAIT_FOR_HOST_HANDSHAKE,
+    SM_WAIT_FOR_HOST_FLAG_CMD,
+    SM_WAIT_FOR_HOST_FLAG_VALUE,
+    SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD,
+    SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE,
     SM_WAIT_FOR_HOST_START_CMD,
     SM_START_DATA_COLLECTION,
     SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD,
@@ -476,11 +482,29 @@ int force_sensor_start_streaming(){
 void force_sensor_update_bias_values(){
 
     float real_force_sample[6] = {0,0,0,0,0,0};
+    int valid_samples = 0;
+
+    // Reset bias accumulators in case calibration is run more than once.
+    FS_X_BIAS = 0;
+    FS_Y_BIAS = 0;
+    FS_Z_BIAS = 0;
+    TORQUE_X_BIAS = 0;
+    TORQUE_Y_BIAS = 0;
+    TORQUE_Z_BIAS = 0;
 
     force_sensor_start_streaming();
 
-    for (int i = 0; i < 1000; i++){
-        return_force_sample_6dof(real_force_sample);
+    // for (int i = 0; i < 1000; i++){
+
+
+
+    while (valid_samples != 1000){
+        FS_RETURN_CODES fs_ret = return_force_sample_6dof(real_force_sample);
+        if (fs_ret != FS_SUCCESS) {
+            continue;
+        }
+
+        valid_samples++;
         FS_X_BIAS += real_force_sample[0];
         FS_Y_BIAS += real_force_sample[1];
         FS_Z_BIAS += real_force_sample[2];
@@ -488,15 +512,23 @@ void force_sensor_update_bias_values(){
         TORQUE_Y_BIAS += real_force_sample[4];
         TORQUE_Z_BIAS += real_force_sample[5];
     }
+    // }
 
-    FS_X_BIAS /= (float)1000;
-    FS_Y_BIAS /= (float)1000;
-    FS_Z_BIAS /= (float)1000;
-    TORQUE_X_BIAS /= (float)1000;
-    TORQUE_Y_BIAS /= (float)1000;
-    TORQUE_Z_BIAS /= (float) 1000;
+    if (valid_samples == 0) {
+        cout << "[WARN] No valid force sensor samples received during bias update. Bias remains zero." << endl;
+        force_sensor_stop_streaming();
+        return;
+    }
+
+    FS_X_BIAS /= (float)valid_samples;
+    FS_Y_BIAS /= (float)valid_samples;
+    FS_Z_BIAS /= (float)valid_samples;
+    TORQUE_X_BIAS /= (float)valid_samples;
+    TORQUE_Y_BIAS /= (float)valid_samples;
+    TORQUE_Z_BIAS /= (float)valid_samples;
 
     cout << "FORCE SENSOR BIAS VALUES" << endl;
+    cout << "VALID_SAMPLES: " << valid_samples << endl;
     cout << "FORCE_X_BIAS: " << FS_X_BIAS << ", FORCE_Y_BIAS: " << FS_Y_BIAS << ", FORCE_Z_BIAS: " << FS_Z_BIAS << endl;
     cout << "TORQUE_X_BIAS: " << TORQUE_X_BIAS << ", TORQUE_Y_BIAS: " << TORQUE_Y_BIAS << ", TORQUE_Z_BIAS: " << TORQUE_Z_BIAS << endl;
 
@@ -559,19 +591,27 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
 
     // 1 quadlet = 4 bytes
 
-    // Timestamp (32 bit)                                                           [1 quadlet]
+    // Timestamp (Double -> 64 bits stored as two seperate quadlets)               [2 quadlets]
     // Encoder Position (32 * num of encoders)                                      [1 quadlet * num of encoders]
     // Encoder Velocity Predicted (64 * num of encoders -> truncated to 32bits)     [1 quadlet * num of encoders]
     // Motur Current and Motor Status (32 * num of Motors -> each are 16 bits)      [1 quadlet * num of motors]
+    // Force Torque Readings -> 6 * 32 bits                                         [1 quadlet * 6 force/torque readings]
     // Digtial IO Values  (optional, used if PS IO is enabled ) 32 bits             [1 quadlet * digital IO]
     // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
-    // Force Torque Readings -> 6 * 32 bits                                         [1 quadlet * 6 Fore/Torque Readings]                 
-    if (use_ps_io_flag){
-        return (2 + 1 + 1 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
-    } else {
-        return (2 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
-    }
+    // POT pins (optional, used if Pot is enabled) num_encoders * 16 bits    
     
+    int default_quadlets_per_sample = (2 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+    int quadlets_per_sample = default_quadlets_per_sample;
+
+    if (use_ps_io_flag){
+        quadlets_per_sample += 2;
+    }
+
+    if (use_pot_flag) {
+        quadlets_per_sample += (1 * num_motors);
+    }
+
+    return quadlets_per_sample;
 }
 
 // calculates the # of samples per packet in quadlets
@@ -655,14 +695,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 4 & 5: motor current and motor status (for num_motors)
         for (int i = 0; i < num_motors; i++) {
             uint32_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); 
-            // uint32_t motor_status = dvrk_controller.Board->GetMotorStatus(i);
-            // data_packet[count++] = (uint32_t)(((motor_status & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
-
-
             uint32_t raw_cmd_current;
+
             dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
-            // int16_t raw_cmd_current_16_bit = static_cast<int16_t>(raw_cmd_current);
-            // uint16_t cmd_current_casted = *reinterpret_cast<uint16_t *>(&raw_cmd_current_16_bit);
 
             data_packet[count++] = (uint32_t)(((raw_cmd_current & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
         }
@@ -704,6 +739,21 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
             data_packet[count++] = (uint32_t) returnMIOPins();
+        }
+
+        if (use_pot_flag){
+            
+            for (int i = 0; i < num_motors; i++) {
+                data_packet[count++] = dvrk_controller.Board->GetAnalogInput(i); // TO make it a voltage use "*4.5/65535"
+            }
+            
+            // uint32_t pot;
+
+            // for (int i = 0; i < num_motors; i++){
+            //     dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 0, pot);
+            //     data_packet[count++] = pot;
+            // }
+            
         }
 
         if (useSampleRate){
@@ -778,41 +828,8 @@ SM wait_for_host_handshake( SM sm ){
     if (sm.udp_ret > 0) {
         if (strcmp(recvd_cmd,  HOST_READY_CMD) == 0) {
             cout << "Received Message - " <<  HOST_READY_CMD << endl;
-            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
-        }                    
-        
-        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_PS_IO) == 0){
-            cout << "Received Message - " <<  HOST_READY_CMD_W_PS_IO << endl;
-            use_ps_io_flag = true;
-
-            // special case: need to resize double_buffer size to account
-            // for extra ps io data
-            reset_double_buffer_info(&db, dvrk_controller.Board); 
-            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+            sm.state = SM_WAIT_FOR_HOST_FLAG_CMD;
         }
-
-        else if (strcmp(recvd_cmd, HOST_READY_CMD_W_SAMPLE_RATE) == 0){
-            cout << "Received Message - " <<  HOST_READY_CMD_W_SAMPLE_RATE << endl;
-            useSampleRate = true;
-            
-
-            while(udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE) <= 0){}
-
-            int * sample_rate;
-            
-            sample_rate = (int *) recvd_cmd;
-
-            SAMPLE_RATE = *sample_rate;
-            printf("NEW SAMPLE RATE: %d\n", *sample_rate);
-
-            use_ps_io_flag = true;
-
-            // special case: need to resize double_buffer size to account
-            // for extra ps io data
-            reset_double_buffer_info(&db, dvrk_controller.Board); 
-            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
-        }
-
         else {
             sm.ret = SM_OUT_OF_SYNC;
             sm.last_state = sm.state;
@@ -821,6 +838,119 @@ SM wait_for_host_handshake( SM sm ){
     }
     else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
         sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_flag_cmd(SM sm){
+    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd, HOST_FLAG_CMD) == 0) {
+            cout << "Received Message - " << HOST_FLAG_CMD << endl;
+            sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
+        } else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_FLAG_CMD;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_flag_value(SM sm){
+    uint8_t flag_cmd = 0x00;
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, &flag_cmd, sizeof(flag_cmd));
+
+    if (sm.udp_ret > 0) {
+        use_ps_io_flag = (flag_cmd & ENABLE_PSIO_MSK);
+        use_pot_flag = (flag_cmd & ENABLE_POT_MSK);
+        useSampleRate = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+
+        cout << "Received Flag Byte: 0x" << std::hex << static_cast<int>(flag_cmd) << std::dec << endl;
+
+        if (useSampleRate){
+            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
+        } else {
+            if (use_ps_io_flag || use_pot_flag){
+                reset_double_buffer_info(&db, dvrk_controller.Board);
+            }
+            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_sample_rate_cmd(SM sm){
+    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
+
+    if (sm.udp_ret > 0) {
+        if (strcmp(recvd_cmd, HOST_SAMPLE_RATE_CMD) == 0){
+            cout << "Received Message - " << HOST_SAMPLE_RATE_CMD << endl;
+            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
+        } else {
+            sm.ret = SM_OUT_OF_SYNC;
+            sm.last_state = sm.state;
+            sm.state = SM_TERMINATE;
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+    return sm;
+}
+
+SM wait_for_host_sample_rate_value(SM sm){
+    int host_sample_rate = 0;
+    sm.udp_ret = udp_nonblocking_receive(&udp_host, &host_sample_rate, sizeof(host_sample_rate));
+
+    if (sm.udp_ret > 0){
+        SAMPLE_RATE = host_sample_rate;
+        printf("NEW SAMPLE RATE: %d\n", SAMPLE_RATE);
+
+        // Keep existing behavior when sample-rate mode is enabled.
+        use_ps_io_flag = true;
+
+        if (use_ps_io_flag || use_pot_flag){
+            reset_double_buffer_info(&db, dvrk_controller.Board);
+        }
+
+        sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
     }
     else {
         sm.ret = SM_UDP_ERROR;
@@ -1007,6 +1137,7 @@ SM start_data_collection(SM sm){
         period_ns = 1'000'000'000L / SAMPLE_RATE;
     }
 
+    force_sensor_update_bias_values();
     force_sensor_start_streaming();
    
     sm.state = SM_START_CONSUMER_THREAD;
@@ -1103,6 +1234,22 @@ static int dataCollectionStateMachine()
             case SM_WAIT_FOR_HOST_HANDSHAKE:
                 sm = wait_for_host_handshake(sm);
                 // printf("handshake\n");
+                break;
+
+            case SM_WAIT_FOR_HOST_FLAG_CMD:
+                sm = wait_for_host_flag_cmd(sm);
+                break;
+
+            case SM_WAIT_FOR_HOST_FLAG_VALUE:
+                sm = wait_for_host_flag_value(sm);
+                break;
+
+            case SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD:
+                sm = wait_for_host_sample_rate_cmd(sm);
+                break;
+
+            case SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE:
+                sm = wait_for_host_sample_rate_value(sm);
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:
