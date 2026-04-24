@@ -23,6 +23,8 @@ http://www.cisst.org/cisst/license.txt.
 
 #include "data_collection_shared.h"
 
+using namespace std;
+
 class DataCollection {
     private:
         static void * collect_data_thread(void * args);
