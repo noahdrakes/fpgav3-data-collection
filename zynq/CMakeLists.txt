@@ -45,7 +45,11 @@ if (Amp1394_HAS_EMIO)
 
   link_directories(${Amp1394_LIBRARY_DIR})
 
-  add_executable(dvrk-data-collection-zynq dvrk-data-collection-zynq.cpp)
+  add_executable(dvrk-data-collection-zynq
+    dvrk-data-collection-zynq.cpp
+    ../unit_convert/unit_convert_zynq/src/unit_conversion.cpp
+    ../unit_convert/unit_convert_zynq/src/config_loader.cpp
+  )
   target_compile_features(dvrk-data-collection-zynq PRIVATE cxx_std_17)
   target_link_libraries(dvrk-data-collection-zynq ${Amp1394_LIBRARIES})
 

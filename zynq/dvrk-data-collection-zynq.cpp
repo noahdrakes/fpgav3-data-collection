@@ -209,7 +209,7 @@ float TORQUE_X_BIAS = 0;
 float TORQUE_Y_BIAS = 0;
 float TORQUE_Z_BIAS = 0;
 
-RobotConfig cfg = NULL;
+RobotConfig cfg;
 
 
 static int mio_mmap_init()
@@ -692,7 +692,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i);
 
             if (use_si_units) {
-                float encoder_pos_si = convert_enc_pos_to_si_units(cfg, num_encoders, encoder_pos, i);
+                float encoder_pos_si = convert_enc_pos_to_si_units(cfg, encoder_pos, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos_si);
             } else {
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos);
@@ -705,7 +705,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             float encoder_velocity_float= static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
 
             if (use_si_units){
-                float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, num_encoders, encoder_velocity_float,i);
+                float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, encoder_velocity_float,i);
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_si);
             } else {
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
@@ -721,8 +721,8 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             uint16_t cmd_curr   = (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
 
             if (use_si_units) {
-                float motor_torque = motor_curr * cfg.actuators[i].cur.scale + cfg.actuators[i].cur.offset;
-                float cmd_torque   = cmd_curr   * cfg.actuators[i].cur.scale + cfg.actuators[i].cur.offset;
+                float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
+                float cmd_torque   = convert_torque_to_si_units(cfg, cmd_curr, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);
             } else {
