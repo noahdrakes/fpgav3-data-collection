@@ -27,7 +27,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <atomic>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include <config_loader.h>
+#include <cmath>
 #include <robot_config.h>
 #include <nlohmann/json.hpp>
 #include "unit_conversion.h"
@@ -65,7 +65,9 @@ volatile uint32_t *GPIO_MEM_REGION;
 // FLAG for including Processor IO in data packets
 bool use_ps_io_flag = false;
 // FLAG for including joint Potentiometer readings in data packets
-bool use_pot_flag = true;
+bool use_pot_flag = false;
+
+bool use_si_units = false;
 
 ///////////////////////////////////
 ///// STATE MACHINE VARIABLES /////
@@ -141,8 +143,6 @@ enum DataCollectionStateMachine {
     SM_WAIT_FOR_HOST_HANDSHAKE,
     SM_WAIT_FOR_HOST_FLAG_CMD,
     SM_WAIT_FOR_HOST_FLAG_VALUE,
-    SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD,
-    SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE,
     SM_WAIT_FOR_HOST_START_CMD,
     SM_START_DATA_COLLECTION,
     SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD,
@@ -208,6 +208,8 @@ float FS_Z_BIAS = 0;
 float TORQUE_X_BIAS = 0;
 float TORQUE_Y_BIAS = 0;
 float TORQUE_Z_BIAS = 0;
+
+RobotConfig cfg = NULL;
 
 
 static int mio_mmap_init()
@@ -418,9 +420,7 @@ void init_force_sensor_connection() {
         perror("[ERROR] Failed to set receive buffer size");
     }
 
-    // Set socket to non-blocking mode
-    // fcntl(udp_fs.socket, F_SETFL, O_NONBLOCK);
-    // ✅ Enable Non-Blocking Mode
+
     int flags = fcntl(udp_fs.socket, F_GETFL, 0);
     if (flags == -1 || fcntl(udp_fs.socket, F_SETFL, flags | O_NONBLOCK) == -1) {
         perror("[ERROR] Failed to set non-blocking mode");
@@ -605,7 +605,8 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
     // POT pins (optional, used if Pot is enabled) num_encoders * 16 bits    
     
-    int default_quadlets_per_sample = (2 + (2*(num_encoders)) + (num_motors) + FORCE_SAMPLE_NUM_DEGREES);
+    int motor_quadlets = use_si_units ? (2 * num_motors) : num_motors;
+    int default_quadlets_per_sample = (2 + (2*(num_encoders)) + motor_quadlets + FORCE_SAMPLE_NUM_DEGREES);
     int quadlets_per_sample = default_quadlets_per_sample;
 
     if (use_ps_io_flag){
@@ -687,24 +688,46 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
+
             int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i);
-            data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
+
+            if (use_si_units) {
+                float encoder_pos_si = convert_enc_pos_to_si_units(cfg, num_encoders, encoder_pos, i);
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos_si);
+            } else {
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos);
+            }
         }
 
         // DATA 3: encoder velocity
         for (int i = 0; i < num_encoders; i++) {
+            
             float encoder_velocity_float= static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
-            data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
+
+            if (use_si_units){
+                float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, num_encoders, encoder_velocity_float,i);
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_si);
+            } else {
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
+            }
+            
         }
 
-        // DATA 4 & 5: motor current and motor status (for num_motors)
+        // DATA 4 & 5: motor current and commanded current (separate quadlets each)
         for (int i = 0; i < num_motors; i++) {
-            uint32_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); 
-            uint32_t raw_cmd_current;
+            uint32_t raw_quadlet;
+            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_quadlet);
+            uint16_t motor_curr = (uint16_t)(raw_quadlet & 0x0000FFFF);
+            uint16_t cmd_curr   = (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
 
-            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
-
-            data_packet[count++] = (uint32_t)(((raw_cmd_current & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
+            if (use_si_units) {
+                float motor_torque = motor_curr * cfg.actuators[i].cur.scale + cfg.actuators[i].cur.offset;
+                float cmd_torque   = cmd_curr   * cfg.actuators[i].cur.scale + cfg.actuators[i].cur.offset;
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);
+            } else {
+                data_packet[count++] = (uint32_t)(((uint32_t)cmd_curr << 16) | motor_curr);
+            }
         }
 
          // DATA 6: force readings
@@ -879,83 +902,61 @@ SM wait_for_host_flag_cmd(SM sm){
     return sm;
 }
 
+static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
+    nlohmann::json j = nlohmann::json::parse(json_str);
+    RobotConfig result;
+    result.actuators.resize(j.size());
+    for (size_t i = 0; i < j.size(); i++) {
+        result.actuators[i].enc.scale    = j[i]["enc_scale"];
+        result.actuators[i].enc.midrange = std::pow(2.0, (int)j[i]["enc_bits"] - 1);
+        result.actuators[i].enc.unit     = M_PI / 180.0;
+        result.actuators[i].cur.scale    = j[i]["cur_scale"];
+        result.actuators[i].cur.offset   = j[i]["cur_offset"];
+    }
+    return result;
+}
+
 SM wait_for_host_flag_value(SM sm){
     uint8_t flag_cmd = 0x00;
     sm.udp_ret = udp_nonblocking_receive(&udp_host, &flag_cmd, sizeof(flag_cmd));
 
     if (sm.udp_ret > 0) {
         use_ps_io_flag = (flag_cmd & ENABLE_PSIO_MSK);
-        use_pot_flag = (flag_cmd & ENABLE_POT_MSK);
-        useSampleRate = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+        use_pot_flag   = (flag_cmd & ENABLE_POT_MSK);
+        useSampleRate  = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+        use_si_units   = (flag_cmd & ENABLE_SI_UNITS_MSK);
 
         cout << "Received Flag Byte: 0x" << std::hex << static_cast<int>(flag_cmd) << std::dec << endl;
 
-        if (useSampleRate){
-            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
-        } else {
-            if (use_ps_io_flag || use_pot_flag){
-                reset_double_buffer_info(&db, dvrk_controller.Board);
-            }
-            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        if (useSampleRate) {
+            int host_sample_rate = 0;
+            do {
+                sm.udp_ret = udp_nonblocking_receive(&udp_host, &host_sample_rate, sizeof(host_sample_rate));
+            } while (sm.udp_ret <= 0);
+
+            SAMPLE_RATE = host_sample_rate;
+            printf("NEW SAMPLE RATE: %d\n", SAMPLE_RATE);
+            use_ps_io_flag = true;
         }
-    }
-    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-        sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
-    }
-    else {
-        sm.ret = SM_UDP_ERROR;
-        sm.last_state = sm.state;
-        sm.state = SM_TERMINATE;
-    }
 
-    return sm;
-}
+        if (use_si_units) {
+            char json_buf[2048] = {0};
+            do {
+                sm.udp_ret = udp_nonblocking_receive(&udp_host, json_buf, sizeof(json_buf));
+            } while (sm.udp_ret <= 0);
 
-SM wait_for_host_sample_rate_cmd(SM sm){
-    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
-    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
-
-    if (sm.udp_ret > 0) {
-        if (strcmp(recvd_cmd, HOST_SAMPLE_RATE_CMD) == 0){
-            cout << "Received Message - " << HOST_SAMPLE_RATE_CMD << endl;
-            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
-        } else {
-            sm.ret = SM_OUT_OF_SYNC;
-            sm.last_state = sm.state;
-            sm.state = SM_TERMINATE;
+            cfg = parse_robot_config_from_json_str(json_buf);
+            cout << "Received robot config with " << cfg.actuators.size() << " actuators" << endl;
         }
-    }
-    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
-    }
-    else {
-        sm.ret = SM_UDP_ERROR;
-        sm.last_state = sm.state;
-        sm.state = SM_TERMINATE;
-    }
 
-    return sm;
-}
-
-SM wait_for_host_sample_rate_value(SM sm){
-    int host_sample_rate = 0;
-    sm.udp_ret = udp_nonblocking_receive(&udp_host, &host_sample_rate, sizeof(host_sample_rate));
-
-    if (sm.udp_ret > 0){
-        SAMPLE_RATE = host_sample_rate;
-        printf("NEW SAMPLE RATE: %d\n", SAMPLE_RATE);
-
-        // Keep existing behavior when sample-rate mode is enabled.
-        use_ps_io_flag = true;
-
-        if (use_ps_io_flag || use_pot_flag){
+        if (use_ps_io_flag || use_pot_flag) {
             reset_double_buffer_info(&db, dvrk_controller.Board);
         }
 
         sm.state = SM_SEND_DATA_COLLECTION_METADATA;
     }
     else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
+        sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
     }
     else {
         sm.ret = SM_UDP_ERROR;
@@ -1230,7 +1231,6 @@ static int dataCollectionStateMachine()
         return -1;
     }
 
-
     sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
 
     while (sm.state != SM_EXIT) {
@@ -1247,14 +1247,6 @@ static int dataCollectionStateMachine()
 
             case SM_WAIT_FOR_HOST_FLAG_VALUE:
                 sm = wait_for_host_flag_value(sm);
-                break;
-
-            case SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD:
-                sm = wait_for_host_sample_rate_cmd(sm);
-                break;
-
-            case SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE:
-                sm = wait_for_host_sample_rate_value(sm);
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:

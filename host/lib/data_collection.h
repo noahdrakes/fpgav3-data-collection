@@ -49,7 +49,7 @@ class DataCollection {
             SM_EXIT
         };
 
-        struct ProcessedSample {
+        struct ProcessedSampleRaw {
             double timestamp;
             int32_t encoder_position[MAX_NUM_ENCODERS];
             float encoder_velocity[MAX_NUM_ENCODERS];
@@ -59,7 +59,19 @@ class DataCollection {
             uint32_t digital_io;
             uint32_t mio_pins;
             uint16_t pot_values[MAX_NUM_MOTORS];
-        } proc_sample;
+        } proc_sample_raw;
+
+        struct ProcessedSampleSI {
+            double timestamp;
+            float encoder_position[MAX_NUM_ENCODERS];
+            float encoder_velocity[MAX_NUM_ENCODERS];
+            float motor_current[MAX_NUM_MOTORS];
+            float motor_status[MAX_NUM_MOTORS];
+            float force_torque[FORCE_SAMPLE_NUM_DEGREES];
+            uint32_t digital_io;
+            uint32_t mio_pins;
+            uint16_t pot_values[MAX_NUM_MOTORS];
+        } proc_sample_si;
 
         struct DC_Time {
             std::chrono::time_point<std::chrono::high_resolution_clock> start;
@@ -83,6 +95,9 @@ class DataCollection {
 
         bool use_sample_rate = false;
         uint16_t sample_rate = 0;
+
+        bool use_si_units = false;
+        string robot_config_json = "";
 
         bool stop_data_collection_flag;
 
@@ -115,11 +130,12 @@ class DataCollection {
         void handle_packet_timeout(void);
         void handle_udp_error(int ret_code);
         void handle_socket_closure(void);
+        string parse_robot_config_json(string json_path);
 
         pthread_t collect_data_t;
     public:
         DataCollection();
-        bool init(uint8_t boardID, uint8_t optionsMask, int sample_rate);
+        bool init(uint8_t boardID, uint8_t optionsMask, int sample_rate, string json_path);
         bool start();
         bool stop();
         bool terminate();

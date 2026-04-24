@@ -24,6 +24,8 @@ http://www.cisst.org/cisst/license.txt.
 #include <pthread.h>
 #include <iomanip>
 
+#include <nlohmann/json.hpp>
+
 #include "udp_tx.h"
 #include "data_collection.h"
 #include "data_collection_shared.h"
@@ -87,38 +89,50 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
     int idx = start_idx;
 
     uint64_t timestamp_high = data_packet[idx++];
-    uint32_t timestamp_low = data_packet[idx++];
+    uint32_t timestamp_low  = data_packet[idx++];
+    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | timestamp_low;
+    double ts = *reinterpret_cast<double*>(&raw_64bit_timestamp);
 
-    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | (timestamp_low);
-
-    proc_sample.timestamp = *reinterpret_cast<double *>(&raw_64bit_timestamp);
-
-    for (int i = 0; i < dc_meta.num_encoders; i++) {
-        proc_sample.encoder_position[i] = *reinterpret_cast<int32_t *> (&data_packet[idx++]);
-    }
-
-    for (int i = 0; i < dc_meta.num_encoders; i++) {
-        proc_sample.encoder_velocity[i] = *reinterpret_cast<float *> (&data_packet[idx++]);
-    }
-
-    for (int i = 0; i < dc_meta.num_motors; i++) {
-        proc_sample.motor_status[i] = static_cast<uint16_t> ((0xFFFF0000 & data_packet[idx]) >> 16);
-        proc_sample.motor_current[i] = (uint16_t) (0x0000FFFF & data_packet[idx]);
-        idx++;
-    }
-
-    for (int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++) {
-        proc_sample.force_torque[i] = *reinterpret_cast<float *> (&data_packet[idx++]);
-    }
-
-    if (use_ps_io){
-        proc_sample.digital_io = data_packet[idx++];
-        proc_sample.mio_pins = data_packet[idx++];
-    }
-
-    if (use_pot){
-        for (int i = 0; i < dc_meta.num_motors; i++){
-            proc_sample.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
+    if (use_si_units) {
+        proc_sample_si.timestamp = ts;
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_si.encoder_position[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_si.encoder_velocity[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_motors; i++) {
+            proc_sample_si.motor_current[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+            proc_sample_si.motor_status[i]  = *reinterpret_cast<float*>(&data_packet[idx++]);
+        }
+        for (int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++)
+            proc_sample_si.force_torque[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        if (use_ps_io) {
+            proc_sample_si.digital_io = data_packet[idx++];
+            proc_sample_si.mio_pins   = data_packet[idx++];
+        }
+        if (use_pot) {
+            for (int i = 0; i < dc_meta.num_motors; i++)
+                proc_sample_si.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
+        }
+    } else {
+        proc_sample_raw.timestamp = ts;
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_raw.encoder_position[i] = *reinterpret_cast<int32_t*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_raw.encoder_velocity[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_motors; i++) {
+            proc_sample_raw.motor_status[i]  = (uint16_t)((data_packet[idx] >> 16) & 0xFFFF);
+            proc_sample_raw.motor_current[i] = (uint16_t)(data_packet[idx] & 0xFFFF);
+            idx++;
+        }
+        for (int i = 0; i < FORCE_SAMPLE_NUM_DEGREES; i++)
+            proc_sample_raw.force_torque[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        if (use_ps_io) {
+            proc_sample_raw.digital_io = data_packet[idx++];
+            proc_sample_raw.mio_pins   = data_packet[idx++];
+        }
+        if (use_pot) {
+            for (int i = 0; i < dc_meta.num_motors; i++)
+                proc_sample_raw.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
         }
     }
 }
@@ -248,51 +262,55 @@ void DataCollection::process_and_write_data() {
         // cout << "packet: " << i << endl;
         process_sample(data_packet, i);
 
-        myFile << setprecision(12) << proc_sample.timestamp << ",";
-
-        for (int j = 0; j < dc_meta.num_encoders; j++) {
-            myFile << proc_sample.encoder_position[j] << ",";
-        }
-        for (int j = 0; j < dc_meta.num_encoders; j++) {
-            myFile << proc_sample.encoder_velocity[j] << ",";
-        }
-        for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << proc_sample.motor_current[j] << ",";
-        }
-
-        for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << static_cast<int16_t>(proc_sample.motor_status[j]) << ","; 
-        }
-
-        // cout << "before writing torque forces" << endl;
-
-        for (int j = 0; j < FORCE_SAMPLE_NUM_DEGREES; j++){
-
-            // cout << j << endl;
-            myFile << proc_sample.force_torque[j];
-
-            if (j < FORCE_SAMPLE_NUM_DEGREES - 1) {
+        if (use_si_units) {
+            myFile << setprecision(12) << proc_sample_si.timestamp << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_si.encoder_position[j] << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_si.encoder_velocity[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_si.motor_current[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_si.motor_status[j] << ",";
+            for (int j = 0; j < FORCE_SAMPLE_NUM_DEGREES; j++) {
+                myFile << proc_sample_si.force_torque[j];
+                if (j < FORCE_SAMPLE_NUM_DEGREES - 1) myFile << ",";
+            }
+            if (use_ps_io)
+                myFile << "," << proc_sample_si.digital_io << "," << proc_sample_si.mio_pins;
+            if (use_pot) {
                 myFile << ",";
+                for (int j = 0; j < dc_meta.num_motors; j++) {
+                    myFile << proc_sample_si.pot_values[j];
+                    if (j < dc_meta.num_motors - 1) myFile << ",";
+                }
             }
-
-        }
-
-        // cout << "no seg fault" << endl;
-
-        if (use_ps_io) {
-            myFile << "," << proc_sample.digital_io << "," << proc_sample.mio_pins;
-        }
-
-        if (use_pot) {
-            myFile << ",";
-            for (int j = 0; j < dc_meta.num_motors; j++) {
-                myFile << proc_sample.pot_values[j];
-                if (j < dc_meta.num_motors - 1) myFile << ",";
+            memset(&proc_sample_si, 0, sizeof(proc_sample_si));
+        } else {
+            myFile << setprecision(12) << proc_sample_raw.timestamp << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_raw.encoder_position[j] << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_raw.encoder_velocity[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_raw.motor_current[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_raw.motor_status[j] << ",";
+            for (int j = 0; j < FORCE_SAMPLE_NUM_DEGREES; j++) {
+                myFile << proc_sample_raw.force_torque[j];
+                if (j < FORCE_SAMPLE_NUM_DEGREES - 1) myFile << ",";
             }
+            if (use_ps_io)
+                myFile << "," << proc_sample_raw.digital_io << "," << proc_sample_raw.mio_pins;
+            if (use_pot) {
+                myFile << ",";
+                for (int j = 0; j < dc_meta.num_motors; j++) {
+                    myFile << proc_sample_raw.pot_values[j];
+                    if (j < dc_meta.num_motors - 1) myFile << ",";
+                }
+            }
+            memset(&proc_sample_raw, 0, sizeof(proc_sample_raw));
         }
-
-        myFile << std::endl;
-        memset(&proc_sample, 0, sizeof(proc_sample));
     }
 }
 
@@ -316,6 +334,32 @@ void DataCollection::handle_socket_closure() {
     std::cout << "Closing socket..." << std::endl;
     // Add socket closure logic here if needed
     isDataCollectionRunning = false;
+}
+
+string DataCollection::parse_robot_config_json(string json_path) {
+    if (json_path.empty()) {
+        return "";
+    }
+
+    ifstream f(json_path);
+    if (!f.is_open()) {
+        cerr << "[ERROR] Failed to open robot config: " << json_path << endl;
+        return "";
+    }
+
+    nlohmann::json full = nlohmann::json::parse(f);
+    nlohmann::json out = nlohmann::json::array();
+
+    for (auto& a : full["Robots"][0]["Actuators"]) {
+        nlohmann::json actuator;
+        actuator["enc_scale"]  = a["Encoder"]["BitsToPosition"]["Scale"];
+        actuator["enc_bits"]   = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
+        actuator["cur_scale"]  = a["Drive"]["BitsToCurrent"]["Scale"];
+        actuator["cur_offset"] = a["Drive"]["BitsToCurrent"]["Offset"];
+        out.push_back(actuator);
+    }
+
+    return out.dump();
 }
 
 
@@ -343,21 +387,29 @@ DataCollection::DataCollection()
 
 // TODO: need to add useful return statements -> all the close socket cases are just returns
 // make sure logic checks out 
-bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rate)
+bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rate, string json_path)
 {
     if(!udp_init(&sock_id, boardID)) {
         return false;
     }
 
-    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK;
+    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK | ENABLE_SI_UNITS_MSK;
     options_mask = optionsMask & supported_mask;
 
     use_ps_io = (options_mask & ENABLE_PSIO_MSK) != 0;
     use_pot = (options_mask & ENABLE_POT_MSK) != 0;
     use_sample_rate = (options_mask & ENABLE_SAMPLE_RATE_MSK) != 0;
+    use_si_units = (options_mask & ENABLE_SI_UNITS_MSK) != 0;
+
+    string parsed_json_file = "";
+    
 
     if (use_sample_rate) {
         this->sample_rate = static_cast<uint16_t>(sample_rate);
+    }
+    
+    if (use_si_units){
+        parsed_json_file = parse_robot_config_json(json_path);
     }
 
     sm_state = SM_SEND_READY_STATE_TO_PS;
@@ -375,9 +427,13 @@ bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rat
                     udp_transmit(sock_id, (void *)&options_mask, sizeof(options_mask));
 
                     if (use_sample_rate){
-                        udp_transmit(sock_id, (char *)HOST_SAMPLE_RATE_CMD, sizeof(HOST_SAMPLE_RATE_CMD));
                         udp_transmit(sock_id, (int *) &sample_rate, sizeof(sample_rate));
                     }
+
+                    if (use_si_units){
+                        udp_transmit(sock_id, (void *)parsed_json_file.c_str(), parsed_json_file.size() + 1);
+                    }
+                    
                 }
                 sm_state = SM_RECV_DATA_COLLECTION_META_DATA;
                 break;

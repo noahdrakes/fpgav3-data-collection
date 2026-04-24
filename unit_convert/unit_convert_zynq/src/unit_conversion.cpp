@@ -3,19 +3,16 @@
 
 
 // converts encoder counts to encoder position (si units)
-void convert_enc_pos_to_si_units(RobotConfig cfg, uint8_t num_enc,uint32_t* raw_encoder_counts, float* position_out){
+float convert_enc_pos_to_si_units(RobotConfig cfg, uint8_t num_enc,int32_t raw_encoder_counts, uint8_t idx){
 
-    for (int i = 0; i < num_enc; i++){
-        position_out[i] = (raw_encoder_counts[i] - cfg.actuators[i].enc.midrange) * cfg.actuators[i].enc.scale * cfg.actuators[i].enc.unit;
-    } 
+        return (raw_encoder_counts - cfg.actuators[idx].enc.midrange) * cfg.actuators[idx].enc.scale * cfg.actuators[idx].enc.unit;
 }
 
 // converts encoder velocity (counts/sec) to si units
-void convert_enc_vel_to_si_units(RobotConfig cfg, uint8_t num_enc,uint32_t* raw_encoder_velocity, float* vel_out){
+float convert_enc_vel_to_si_units(RobotConfig cfg, uint8_t num_enc,float raw_encoder_velocity, uint8_t idx){
 
-    for (int i = 0; i < num_enc; i++){
-            vel_out[i] = raw_encoder_velocity[i] * cfg.actuators[i].enc.scale * cfg.actuators[i].enc.unit;
-    } 
+    return raw_encoder_velocity * cfg.actuators[idx].enc.scale * cfg.actuators[idx].enc.unit;
+
 }
 
 void convert_torque_to_si_units(RobotConfig cfg, uint8_t num_motors,uint32_t* raw_current, float* current_out){

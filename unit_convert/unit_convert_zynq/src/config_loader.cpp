@@ -1,7 +1,11 @@
 #include <../lib/config_loader.h>
+#include <algorithm>
+#include <dirent.h>
 #include <fstream>
 #include <cmath>
 #include <stdexcept>
+#include <sys/stat.h>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -66,4 +70,45 @@ RobotConfig load_config(const std::string& path) {
     }
 
     return cfg;
+}
+
+std::string find_first_json_config(const std::string& directory_path) {
+    struct stat path_stat;
+    if (stat(directory_path.c_str(), &path_stat) != 0) {
+        throw std::runtime_error("Config directory does not exist: " + directory_path);
+    }
+    if (!S_ISDIR(path_stat.st_mode)) {
+        throw std::runtime_error("Config path is not a directory: " + directory_path);
+    }
+
+    DIR* dir = opendir(directory_path.c_str());
+    if (!dir) {
+        throw std::runtime_error("Failed to open config directory: " + directory_path);
+    }
+
+    std::vector<std::string> json_files;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        const std::string file_name(entry->d_name);
+        if (file_name.size() < 5 || file_name.substr(file_name.size() - 5) != ".json") {
+            continue;
+        }
+
+        const std::string full_path = directory_path + "/" + file_name;
+        if (stat(full_path.c_str(), &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
+            json_files.push_back(full_path);
+        }
+    }
+    closedir(dir);
+
+    if (json_files.empty()) {
+        throw std::runtime_error("No .json config file found in directory: " + directory_path);
+    }
+
+    std::sort(json_files.begin(), json_files.end());
+    return json_files.front();
+}
+
+RobotConfig load_first_json_config(const std::string& directory_path) {
+    return load_config(find_first_json_config(directory_path));
 }

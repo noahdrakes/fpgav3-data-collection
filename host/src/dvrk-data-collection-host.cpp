@@ -122,6 +122,8 @@ int main(int argc, char *argv[])
     bool timedCaptureFlag = false;
     bool use_ps_io_flag = false;
     bool use_pot_flag = false;
+    bool use_si_units_flag = false;
+    string robot_config_path = "";
     bool use_sample_rate = false;
     uint8_t options_mask = 0x00;
     uint8_t boardID = 0;
@@ -184,7 +186,10 @@ int main(int argc, char *argv[])
                 use_pot_flag = true;
                 cout << "Potentiometer readings will be included in data packet!" << endl;
                 break;
-
+            case 'c':
+                use_si_units_flag = true;
+                robot_config_path = optarg;
+                cout << "Converting data to Si Units!" << endl;    
             case 'h':
                 printUsage(argv[0]);
                 return 0;
@@ -220,12 +225,16 @@ int main(int argc, char *argv[])
         options_mask |= ENABLE_SAMPLE_RATE_MSK;
     }
 
+    if (use_si_units_flag) {
+        options_mask |= ENABLE_SI_UNITS_MSK;
+    }
+
     bool ret;
 
     DataCollection *DC = new DataCollection();
     bool stop_data_collection = false;
 
-    if (!DC->init(boardID, options_mask, sample_rate)) {
+    if (!DC->init(boardID, options_mask, sample_rate, robot_config_path)) {
         return -1;
     }
 
