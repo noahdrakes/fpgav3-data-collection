@@ -39,12 +39,22 @@ endif ()
 if (Amp1394_HAS_EMIO)
 
   include_directories(${Amp1394_INCLUDE_DIR})
+  include_directories("../unit_convert/unit_convert_zynq/lib")
   include_directories("../shared")
 
   link_directories(${Amp1394_LIBRARY_DIR})
 
-  add_executable(dvrk-data-collection-zynq dvrk-data-collection-zynq.cpp)
+  add_executable(dvrk-data-collection-zynq
+    dvrk-data-collection-zynq.cpp
+    ../unit_convert/unit_convert_zynq/src/unit_conversion.cpp
+    ../unit_convert/unit_convert_zynq/src/config_loader.cpp
+  )
+  target_compile_features(dvrk-data-collection-zynq PRIVATE cxx_std_17)
   target_link_libraries(dvrk-data-collection-zynq ${Amp1394_LIBRARIES})
+
+  target_include_directories(dvrk-data-collection-zynq PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../unit_convert/unit_convert_zynq/lib/json/include
+  )
 
   install (TARGETS dvrk-data-collection-zynq
            RUNTIME DESTINATION bin)

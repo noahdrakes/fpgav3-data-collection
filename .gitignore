@@ -6,3 +6,4 @@
 .DS_Store
 *.cmake
 *~
+unit_convert_zynq/lib/json

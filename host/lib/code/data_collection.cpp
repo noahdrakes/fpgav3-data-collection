@@ -24,6 +24,8 @@ http://www.cisst.org/cisst/license.txt.
 #include <pthread.h>
 #include <iomanip>
 
+#include <nlohmann/json.hpp>
+
 #include "udp_tx.h"
 #include "data_collection.h"
 #include "data_collection_shared.h"
@@ -68,7 +70,7 @@ static void hwVersToString(uint32_t val, char *str)
 {
     val = bswap_32(val);
 
-    const char *val_char =  reinterpret_cast<const char*> (&val); 
+    const char *val_char =  reinterpret_cast<const char*> (&val);
     char hw_vers[5];
     memcpy(str, val_char, 4);
     str[4] = '\0';
@@ -87,33 +89,49 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
 
     int idx = start_idx;
 
-
     uint64_t timestamp_high = data_packet[idx++];
-    uint32_t timestamp_low = data_packet[idx++];
+    uint32_t timestamp_low  = data_packet[idx++];
+    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | timestamp_low;
+    double ts = *reinterpret_cast<double*>(&raw_64bit_timestamp);
 
-    uint64_t raw_64bit_timestamp = (timestamp_high << 32) | (timestamp_low);
-
-    proc_sample.timestamp = *reinterpret_cast<double *>(&raw_64bit_timestamp);
-
-    for (int i = 0; i < dc_meta.num_encoders; i++) {
-        proc_sample.encoder_position[i] = *reinterpret_cast<int32_t *> (&data_packet[idx++]);
+    if (use_si_units) {
+        proc_sample_si.timestamp = ts;
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_si.encoder_position[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_si.encoder_velocity[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_motors; i++) {
+            proc_sample_si.motor_current[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+            proc_sample_si.motor_status[i]  = *reinterpret_cast<float*>(&data_packet[idx++]);
+        }
+        if (use_ps_io) {
+            proc_sample_si.digital_io = data_packet[idx++];
+            proc_sample_si.mio_pins   = data_packet[idx++];
+        }
+        if (use_pot) {
+            for (int i = 0; i < dc_meta.num_motors; i++)
+                proc_sample_si.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
+        }
+    } else {
+        proc_sample_raw.timestamp = ts;
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_raw.encoder_position[i] = *reinterpret_cast<int32_t*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_encoders; i++)
+            proc_sample_raw.encoder_velocity[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
+        for (int i = 0; i < dc_meta.num_motors; i++) {
+            proc_sample_raw.motor_status[i]  = (uint16_t)((data_packet[idx] >> 16) & 0xFFFF);
+            proc_sample_raw.motor_current[i] = (uint16_t)(data_packet[idx] & 0xFFFF);
+            idx++;
+        }
+        if (use_ps_io) {
+            proc_sample_raw.digital_io = data_packet[idx++];
+            proc_sample_raw.mio_pins   = data_packet[idx++];
+        }
+        if (use_pot) {
+            for (int i = 0; i < dc_meta.num_motors; i++)
+                proc_sample_raw.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
+        }
     }
-
-    for (int i = 0; i < dc_meta.num_encoders; i++) {
-        proc_sample.encoder_velocity[i] = *reinterpret_cast<float *> (&data_packet[idx++]);
-    }
-
-    for (int i = 0; i < dc_meta.num_motors; i++) {
-        proc_sample.motor_status[i] = static_cast<uint16_t> ((0xFFFF0000 & data_packet[idx]) >> 16);
-        proc_sample.motor_current[i] = (uint16_t) (0x0000FFFF & data_packet[idx]);
-        idx++;
-    }
-
-    if (use_ps_io){
-        proc_sample.digital_io = data_packet[idx++];
-        proc_sample.mio_pins = data_packet[idx++];
-    }
-    
 }
 
 int DataCollection::collect_data() {
@@ -206,6 +224,11 @@ void DataCollection::write_csv_headers() {
     if (use_ps_io) {
         myFile << ",DIGITAL_IO,MIO_PINS";
     }
+    if (use_pot) {
+        for (int i = 1; i <= dc_meta.num_motors; i++) {
+            myFile << ",POT_" << i;
+        }
+    }
 
     myFile << std::endl;
 }
@@ -214,29 +237,47 @@ void DataCollection::process_and_write_data() {
     for (int i = 0; i < dc_meta.data_packet_size / 4; i += dc_meta.size_of_sample) {
         process_sample(data_packet, i);
 
-        myFile << setprecision(12) << proc_sample.timestamp << ",";
-
-        for (int j = 0; j < dc_meta.num_encoders; j++) {
-            myFile << proc_sample.encoder_position[j] << ",";
-        }
-        for (int j = 0; j < dc_meta.num_encoders; j++) {
-            myFile << proc_sample.encoder_velocity[j] << ",";
-        }
-        for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << proc_sample.motor_current[j] << ",";
-        }
-
-        for (int j = 0; j < dc_meta.num_motors; j++) {
-            myFile << static_cast<uint16_t>(proc_sample.motor_status[j]);
-            if (j < dc_meta.num_motors - 1) myFile << ",";
-        }
-
-        if (use_ps_io) {
-            myFile << "," << proc_sample.digital_io << "," << proc_sample.mio_pins;
+        if (use_si_units) {
+            myFile << setprecision(12) << proc_sample_si.timestamp << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_si.encoder_position[j] << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_si.encoder_velocity[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_si.motor_current[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++) {
+                myFile << proc_sample_si.motor_status[j];
+                if (j < dc_meta.num_motors - 1) myFile << ",";
+            }
+            if (use_ps_io)
+                myFile << "," << proc_sample_si.digital_io << "," << proc_sample_si.mio_pins;
+            if (use_pot) {
+                for (int j = 0; j < dc_meta.num_motors; j++)
+                    myFile << "," << proc_sample_si.pot_values[j];
+            }
+            memset(&proc_sample_si, 0, sizeof(proc_sample_si));
+        } else {
+            myFile << setprecision(12) << proc_sample_raw.timestamp << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_raw.encoder_position[j] << ",";
+            for (int j = 0; j < dc_meta.num_encoders; j++)
+                myFile << proc_sample_raw.encoder_velocity[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++)
+                myFile << proc_sample_raw.motor_current[j] << ",";
+            for (int j = 0; j < dc_meta.num_motors; j++) {
+                myFile << static_cast<uint16_t>(proc_sample_raw.motor_status[j]);
+                if (j < dc_meta.num_motors - 1) myFile << ",";
+            }
+            if (use_ps_io)
+                myFile << "," << proc_sample_raw.digital_io << "," << proc_sample_raw.mio_pins;
+            if (use_pot) {
+                for (int j = 0; j < dc_meta.num_motors; j++)
+                    myFile << "," << proc_sample_raw.pot_values[j];
+            }
+            memset(&proc_sample_raw, 0, sizeof(proc_sample_raw));
         }
 
         myFile << std::endl;
-        memset(&proc_sample, 0, sizeof(proc_sample));
     }
 }
 
@@ -260,6 +301,32 @@ void DataCollection::handle_socket_closure() {
     std::cout << "Closing socket..." << std::endl;
     // Add socket closure logic here if needed
     isDataCollectionRunning = false;
+}
+
+string DataCollection::parse_robot_config_json(string json_path) {
+    if (json_path.empty()) {
+        return "";
+    }
+
+    ifstream f(json_path);
+    if (!f.is_open()) {
+        cerr << "[ERROR] Failed to open robot config: " << json_path << endl;
+        return "";
+    }
+
+    nlohmann::json full = nlohmann::json::parse(f);
+    nlohmann::json out = nlohmann::json::array();
+
+    for (auto& a : full["Robots"][0]["Actuators"]) {
+        nlohmann::json actuator;
+        actuator["enc_scale"]  = a["Encoder"]["BitsToPosition"]["Scale"];
+        actuator["enc_bits"]   = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
+        actuator["cur_scale"]  = a["Drive"]["BitsToCurrent"]["Scale"];
+        actuator["cur_offset"] = a["Drive"]["BitsToCurrent"]["Offset"];
+        out.push_back(actuator);
+    }
+
+    return out.dump();
 }
 
 
@@ -286,47 +353,53 @@ DataCollection::DataCollection()
 }
 
 // TODO: need to add useful return statements -> all the close socket cases are just returns
-// make sure logic checks out 
-bool DataCollection :: init(uint8_t boardID, bool usePSIO, bool useSampleRate, int sample_rate)
+// make sure logic checks out
+bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rate, string json_path)
 {
     if(!udp_init(&sock_id, boardID)) {
         return false;
     }
 
-    if(useSampleRate){
-        use_sample_rate = true; 
+    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK | ENABLE_SI_UNITS_MSK;
+    options_mask = optionsMask & supported_mask;
+
+    use_ps_io = (options_mask & ENABLE_PSIO_MSK) != 0;
+    use_pot = (options_mask & ENABLE_POT_MSK) != 0;
+    use_sample_rate = (options_mask & ENABLE_SAMPLE_RATE_MSK) != 0;
+    use_si_units = (options_mask & ENABLE_SI_UNITS_MSK) != 0;
+
+    string parsed_json_file = "";
+
+    if (use_sample_rate) {
+        this->sample_rate = static_cast<uint16_t>(sample_rate);
     }
 
+    if (use_si_units){
+        parsed_json_file = parse_robot_config_json(json_path);
+    }
 
     sm_state = SM_SEND_READY_STATE_TO_PS;
     int ret_code = 0;
 
     char recvBuffer[100] = {0};
 
-    bool error_flag = false;
-
-    use_ps_io = usePSIO;
-
     // Handshaking PS
     while(1) {
         switch(sm_state) {
             case SM_SEND_READY_STATE_TO_PS:
-
-                if (!use_ps_io && !use_sample_rate){
+                {
                     udp_transmit(sock_id, (char *)HOST_READY_CMD, sizeof(HOST_READY_CMD));
-                }
+                    udp_transmit(sock_id, (char *)HOST_FLAG_CMD, sizeof(HOST_FLAG_CMD));
+                    udp_transmit(sock_id, (void *)&options_mask, sizeof(options_mask));
 
-                if (use_ps_io){
-                    udp_transmit(sock_id, (char *)HOST_READY_CMD_W_PS_IO, sizeof(HOST_READY_CMD_W_PS_IO));
-                } 
+                    if (use_sample_rate){
+                        udp_transmit(sock_id, (int *) &sample_rate, sizeof(sample_rate));
+                    }
 
-                if(use_sample_rate){
-                    udp_transmit(sock_id, (char *)HOST_READY_CMD_W_SAMPLE_RATE, sizeof(HOST_READY_CMD_W_SAMPLE_RATE));
-                    udp_transmit(sock_id, (int *) &sample_rate, sizeof(sample_rate));
+                    if (use_si_units){
+                        udp_transmit(sock_id, (void *)parsed_json_file.c_str(), parsed_json_file.size() + 1);
+                    }
                 }
-                
-                
-                
                 sm_state = SM_RECV_DATA_COLLECTION_META_DATA;
                 break;
 
@@ -368,12 +441,12 @@ bool DataCollection :: init(uint8_t boardID, bool usePSIO, bool useSampleRate, i
 
             case SM_WAIT_FOR_PS_HANDSHAKE:
                 ret_code = udp_nonblocking_receive(sock_id, recvBuffer, sizeof(recvBuffer));
-                
+
                 if (ret_code > 0) {
                     if (strcmp(recvBuffer, "ZYNQ: READY FOR DATA COLLECTION") == 0) {
                         cout << "Received Message " << ZYNQ_READY_CMD << endl;
                         sm_state = SM_SEND_START_DATA_COLLECTIION_CMD_TO_PS;
-                        return true; 
+                        return true;
                     } else {
                         cout << "[ERROR] Host data collection is out of sync with Processor State Machine. Restart Server";
                         sm_state = SM_CLOSE_SOCKET;
@@ -443,7 +516,6 @@ bool DataCollection :: stop()
 
 bool DataCollection :: terminate()
 {
-    char terminateClientAndServerCmd[] = "CLIENT: Terminate Server";
     char recvBuffer[100] = {0};
 
     if (!udp_transmit(sock_id, (char *) HOST_TERMINATE_SERVER, sizeof(HOST_TERMINATE_SERVER))) {
