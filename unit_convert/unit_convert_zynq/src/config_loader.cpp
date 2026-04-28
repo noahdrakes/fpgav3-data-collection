@@ -50,7 +50,17 @@ RobotConfig load_config(const std::string& path) {
         auto& enc = a["Encoder"];
 
         double scale = enc["BitsToPosition"]["Scale"];
-        double unit = M_PI / 180.0;  // deg → rad
+        std::string unit_str = enc["BitsToPosition"]["Unit"].get<std::string>();
+        double unit;
+        if (unit_str == "deg") {
+            unit = M_PI / 180.0;
+        } else if (unit_str == "rad") {
+            unit = 1.0;
+        } else if (unit_str == "mm") {
+            unit = 0.001;
+        } else {
+            throw std::runtime_error("Unknown BitsToPosition unit '" + unit_str + "' for actuator " + std::to_string(i));
+        }
         double midrange = infer_midrange(enc);
 
         cfg.actuators[i].enc = {scale, unit, midrange};

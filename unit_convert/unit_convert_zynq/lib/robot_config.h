@@ -3,7 +3,7 @@
 
 struct EncoderConfig {
     double scale;     // bits → deg (from JSON)
-    double unit;      // deg → rad
+    double unit;      // SI conversion factor (deg→rad, rad→1, mm→m)
     double midrange;  // pre-scale offset
 };
 
