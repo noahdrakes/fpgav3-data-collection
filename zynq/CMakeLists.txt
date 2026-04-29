@@ -50,6 +50,11 @@ if (Amp1394_HAS_EMIO)
     ../unit_convert/unit_convert_zynq/src/config_loader.cpp
   )
   target_compile_features(dvrk-data-collection-zynq PRIVATE cxx_std_17)
+  
+  target_compile_definitions(dvrk-data-collection-zynq PRIVATE
+  __GLIBC_USE_C2X_STRTOL=0
+)
+
   target_link_libraries(dvrk-data-collection-zynq ${Amp1394_LIBRARIES})
 
   target_include_directories(dvrk-data-collection-zynq PRIVATE
