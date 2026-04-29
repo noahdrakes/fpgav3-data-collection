@@ -7,3 +7,4 @@
 *.cmake
 *~
 unit_convert_zynq/lib/json
+*.json
