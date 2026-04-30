@@ -451,7 +451,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
             if (use_si_units) {
                 float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
-                float cmd_torque   = convert_torque_to_si_units(cfg, cmd_curr, i);
+                float cmd_torque   = convert_torque_command_to_si_units(cfg, cmd_curr, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);
             } else {
@@ -592,13 +592,62 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
     nlohmann::json j = nlohmann::json::parse(json_str);
     RobotConfig result;
     result.actuators.resize(j.size());
+
     for (size_t i = 0; i < j.size(); i++) {
-        result.actuators[i].enc.scale    = j[i]["enc_scale"];
-        result.actuators[i].enc.midrange = std::pow(2.0, (int)j[i]["enc_bits"] - 1);
-        result.actuators[i].enc.unit     = M_PI / 180.0;
-        result.actuators[i].cur.scale    = j[i]["cur_scale"];
-        result.actuators[i].cur.offset   = j[i]["cur_offset"];
+        auto& actuator = result.actuators[i];
+        const auto& actuator_json = j[i];
+
+        if (actuator_json.contains("Enc_B2P")) {
+            actuator.Enc_B2P.Scale = actuator_json["Enc_B2P"].value("Scale", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json["Enc_B2P"].value("Offset", 0.0);
+        } else {
+            actuator.Enc_B2P.Scale = actuator_json.value("enc_scale", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json.value("enc_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_B2C")) {
+            actuator.Curr_B2C.Scale = actuator_json["Curr_B2C"].value("Scale", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json["Curr_B2C"].value("Offset", 0.0);
+        } else {
+            actuator.Curr_B2C.Scale = actuator_json.value("cur_scale", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json.value("cur_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_C2B")) {
+            actuator.Curr_C2B.Scale = actuator_json["Curr_C2B"].value("Scale", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json["Curr_C2B"].value("Offset", 0.0);
+        } else {
+            actuator.Curr_C2B.Scale = actuator_json.value("curr_c2b_scale", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json.value("curr_c2b_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_Nm2C")) {
+            actuator.Curr_Nm2C.Scale = actuator_json["Curr_Nm2C"].value("Scale", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json["Curr_Nm2C"].value("Offset", 0.0);
+        } else {
+            actuator.Curr_Nm2C.Scale = actuator_json.value("curr_nm2c_scale", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json.value("curr_nm2c_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Pot_B2V")) {
+            actuator.Pot_B2V.Scale = actuator_json["Pot_B2V"].value("Scale", 0.0);
+            actuator.Pot_B2V.Offset = actuator_json["Pot_B2V"].value("Offset", 0.0);
+        } else {
+            actuator.Pot_B2V.Scale = actuator_json.value("pot_b2v_scale", 0.0);
+            actuator.Pot_B2V.Offset = actuator_json.value("pot_b2v_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Pot_V2P")) {
+            actuator.Pot_V2P.Scale = actuator_json["Pot_V2P"].value("Scale", 0.0);
+            actuator.Pot_V2P.Offset = actuator_json["Pot_V2P"].value("Offset", 0.0);
+        } else {
+            actuator.Pot_V2P.Scale = actuator_json.value("pot_v2p_scale", 0.0);
+            actuator.Pot_V2P.Offset = actuator_json.value("pot_v2p_offset", 0.0);
+        }
+        actuator.midrange = std::pow(2.0, actuator_json.value("enc_bits", 24) - 1);
+        actuator.unit = actuator_json.value("unit", M_PI / 180.0);
     }
+
     return result;
 }
 
@@ -626,7 +675,7 @@ SM wait_for_host_flag_value(SM sm){
         }
 
         if (use_si_units) {
-            char json_buf[2048] = {0};
+            char json_buf[4096] = {0};
             do {
                 sm.udp_ret = udp_nonblocking_receive(&udp_host, json_buf, sizeof(json_buf));
             } while (sm.udp_ret <= 0);

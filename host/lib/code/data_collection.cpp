@@ -19,6 +19,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <unistd.h>
 #include <stdio.h>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <pthread.h>
@@ -317,13 +318,40 @@ string DataCollection::parse_robot_config_json(string json_path) {
     nlohmann::json full = nlohmann::json::parse(f);
     nlohmann::json out = nlohmann::json::array();
 
-    for (auto& a : full["Robots"][0]["Actuators"]) {
-        nlohmann::json actuator;
-        actuator["enc_scale"]  = a["Encoder"]["BitsToPosition"]["Scale"];
-        actuator["enc_bits"]   = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
-        actuator["cur_scale"]  = a["Drive"]["BitsToCurrent"]["Scale"];
-        actuator["cur_offset"] = a["Drive"]["BitsToCurrent"]["Offset"];
-        out.push_back(actuator);
+    if (full.contains("Robots")) {
+        for (auto& a : full["Robots"][0]["Actuators"]) {
+            nlohmann::json actuator;
+            actuator["Enc_B2P"]["Scale"] = a["Encoder"]["BitsToPosition"]["Scale"];
+            actuator["Enc_B2P"]["Offset"] = a["Encoder"]["BitsToPosition"].value("Offset", 0.0);
+            actuator["Curr_B2C"]["Scale"] = a["Drive"]["BitsToCurrent"]["Scale"];
+            actuator["Curr_B2C"]["Offset"] = a["Drive"]["BitsToCurrent"].value("Offset", 0.0);
+            actuator["Curr_C2B"]["Scale"] = a["Drive"]["CurrentToBits"]["Scale"];
+            actuator["Curr_C2B"]["Offset"] = a["Drive"]["CurrentToBits"].value("Offset", 0.0);
+            actuator["Curr_Nm2C"]["Scale"] = a["Drive"]["EffortToCurrent"]["Scale"];
+            actuator["Curr_Nm2C"]["Offset"] = a["Drive"]["EffortToCurrent"].value("Offset", 0.0);
+            actuator["Pot_B2V"]["Scale"] = a["Pot"]["BitsToVoltage"].value("Scale", 0.0);
+            actuator["Pot_B2V"]["Offset"] = a["Pot"]["BitsToVoltage"].value("Offset", 0.0);
+            actuator["Pot_V2P"]["Scale"] = a["Pot"]["SensorToPosition"].value("Scale", 0.0);
+            actuator["Pot_V2P"]["Offset"] = a["Pot"]["SensorToPosition"].value("Offset", 0.0);
+            actuator["enc_bits"] = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
+            actuator["unit"] = (a.value("JointType", "") == "PRISMATIC") ? 0.001 : M_PI / 180.0;
+            out.push_back(actuator);
+        }
+    } else if (full.contains("robots")) {
+        for (auto& a : full["robots"][0]["actuators"]) {
+            nlohmann::json actuator;
+            actuator["Enc_B2P"]["Scale"] = a["encoder"]["bits_to_position"]["scale"];
+            actuator["Enc_B2P"]["Offset"] = a["encoder"]["bits_to_position"].value("offset", 0.0);
+            actuator["Curr_B2C"]["Scale"] = a["drive"]["bits_to_current"]["scale"];
+            actuator["Curr_B2C"]["Offset"] = a["drive"]["bits_to_current"].value("offset", 0.0);
+            actuator["Curr_C2B"]["Scale"] = a["drive"]["current_to_bits"]["scale"];
+            actuator["Curr_C2B"]["Offset"] = a["drive"]["current_to_bits"].value("offset", 0.0);
+            actuator["Curr_Nm2C"]["Scale"] = a["drive"]["effort_to_current"]["scale"];
+            actuator["Curr_Nm2C"]["Offset"] = a["drive"]["effort_to_current"].value("offset", 0.0);
+            actuator["enc_bits"] = a["encoder"].contains("bits") ? a["encoder"]["bits"].get<int>() : 24;
+            actuator["unit"] = 1.0;
+            out.push_back(actuator);
+        }
     }
 
     return out.dump();

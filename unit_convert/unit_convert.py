@@ -36,10 +36,23 @@ def unitConvert(configuration, fileName):
     # https://github.com/jhu-saw/sawRobotIO1394/blob/417e6bd88b15dfcc6f9647bc0d677ef097c001cf/core/components/code/mtsRobot1394.cpp#L859C1-L988C2
     Time['TIMESTAMP'] = robot_data['TIMESTAMP']
     for i in range(len(Actuators)):
+
+        
         Curr_B2C[i] = Actuators[i]['Drive']['BitsToCurrent']
         Curr_C2B[i] = Actuators[i]['Drive']['CurrentToBits']
         Curr_Nm2C[i] = Actuators[i]['Drive']['EffortToCurrent']
         Enc_B2P[i] = Actuators[i]['Encoder']['BitsToPosition']
+        print("--------------")
+        print("ACTUATOR: ", i)
+        print("---------------")
+        print("unit: ",  enc_unit[bool(Actuators[i]['JointType'] == "PRISMATIC")])
+        print("Enc_B2P Scale: ", Enc_B2P[i]['Scale'])
+        print("Enc_B2P Offset: ", Enc_B2P[i]['Offset'])
+        
+        print("CURR_B2C: ", Curr_B2C[i]['Scale'])
+        print("CURR_C2B: ", Curr_C2B[i]['Scale'])
+        print("Nm2C: ", Curr_Nm2C[i]['Scale'])
+        # print("measured torque offset: ")
         Pot_B2V[i] = Actuators[i]['Pot']['BitsToVoltage']
         Pot_V2P[i] = Actuators[i]['Pot']['SensorToPosition']
         Torq_FB[f'TORQUE_FEEDBACK_{i+1}'] = ((robot_data[f'MOTOR_CURRENT_{i+1}'] * Curr_B2C[i]['Scale']) + Curr_B2C[i]['Offset']) / Curr_Nm2C[i][

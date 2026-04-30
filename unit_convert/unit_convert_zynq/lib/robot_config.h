@@ -1,20 +1,20 @@
 #pragma once
 #include <vector>
 
-struct EncoderConfig {
-    double scale;     // bits → deg (from JSON)
-    double unit;      // SI conversion factor (deg→rad, rad→1, mm→m)
-    double midrange;  // pre-scale offset
-};
-
-struct CurrentConfig {
-    double scale;
-    double offset;
+struct ScaleOffset {
+    double Scale;
+    double Offset;
 };
 
 struct ActuatorConfig {
-    EncoderConfig enc;
-    CurrentConfig cur;
+    ScaleOffset Curr_B2C;
+    ScaleOffset Curr_C2B;
+    ScaleOffset Curr_Nm2C;
+    ScaleOffset Enc_B2P;
+    ScaleOffset Pot_B2V;
+    ScaleOffset Pot_V2P;
+    double unit;      // SI conversion factor (deg->rad, mm->m)
+    double midrange;  // pre-scale encoder offset
 };
 
 struct RobotConfig {
