@@ -321,40 +321,36 @@ string DataCollection::parse_robot_config_json(string json_path) {
     if (full.contains("Robots")) {
         for (auto& a : full["Robots"][0]["Actuators"]) {
             nlohmann::json actuator;
-            actuator["Enc_B2P"]["Scale"] = a["Encoder"]["BitsToPosition"]["Scale"];
-            actuator["Enc_B2P"]["Offset"] = a["Encoder"]["BitsToPosition"].value("Offset", 0.0);
-            actuator["Curr_B2C"]["Scale"] = a["Drive"]["BitsToCurrent"]["Scale"];
-            actuator["Curr_B2C"]["Offset"] = a["Drive"]["BitsToCurrent"].value("Offset", 0.0);
-            actuator["Curr_C2B"]["Scale"] = a["Drive"]["CurrentToBits"]["Scale"];
-            actuator["Curr_C2B"]["Offset"] = a["Drive"]["CurrentToBits"].value("Offset", 0.0);
-            actuator["Curr_Nm2C"]["Scale"] = a["Drive"]["EffortToCurrent"]["Scale"];
-            actuator["Curr_Nm2C"]["Offset"] = a["Drive"]["EffortToCurrent"].value("Offset", 0.0);
-            actuator["Pot_B2V"]["Scale"] = a["Pot"]["BitsToVoltage"].value("Scale", 0.0);
-            actuator["Pot_B2V"]["Offset"] = a["Pot"]["BitsToVoltage"].value("Offset", 0.0);
-            actuator["Pot_V2P"]["Scale"] = a["Pot"]["SensorToPosition"].value("Scale", 0.0);
-            actuator["Pot_V2P"]["Offset"] = a["Pot"]["SensorToPosition"].value("Offset", 0.0);
-            actuator["enc_bits"] = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
-            actuator["unit"] = (a.value("JointType", "") == "PRISMATIC") ? 0.001 : M_PI / 180.0;
+            actuator["es"] = a["Encoder"]["BitsToPosition"]["Scale"];
+            actuator["eo"] = a["Encoder"]["BitsToPosition"].value("Offset", 0.0);
+            actuator["eb"] = a["Encoder"].contains("Bits") ? a["Encoder"]["Bits"].get<int>() : 24;
+            actuator["u"] = (a.value("JointType", "") == "PRISMATIC") ? 0.001 : M_PI / 180.0;
+            actuator["b2cs"] = a["Drive"]["BitsToCurrent"]["Scale"];
+            actuator["b2co"] = a["Drive"]["BitsToCurrent"].value("Offset", 0.0);
+            actuator["c2bs"] = a["Drive"]["CurrentToBits"]["Scale"];
+            actuator["c2bo"] = a["Drive"]["CurrentToBits"].value("Offset", 0.0);
+            actuator["n2cs"] = a["Drive"]["EffortToCurrent"]["Scale"];
+            actuator["n2co"] = a["Drive"]["EffortToCurrent"].value("Offset", 0.0);
             out.push_back(actuator);
         }
     } else if (full.contains("robots")) {
         for (auto& a : full["robots"][0]["actuators"]) {
             nlohmann::json actuator;
-            actuator["Enc_B2P"]["Scale"] = a["encoder"]["bits_to_position"]["scale"];
-            actuator["Enc_B2P"]["Offset"] = a["encoder"]["bits_to_position"].value("offset", 0.0);
-            actuator["Curr_B2C"]["Scale"] = a["drive"]["bits_to_current"]["scale"];
-            actuator["Curr_B2C"]["Offset"] = a["drive"]["bits_to_current"].value("offset", 0.0);
-            actuator["Curr_C2B"]["Scale"] = a["drive"]["current_to_bits"]["scale"];
-            actuator["Curr_C2B"]["Offset"] = a["drive"]["current_to_bits"].value("offset", 0.0);
-            actuator["Curr_Nm2C"]["Scale"] = a["drive"]["effort_to_current"]["scale"];
-            actuator["Curr_Nm2C"]["Offset"] = a["drive"]["effort_to_current"].value("offset", 0.0);
-            actuator["enc_bits"] = a["encoder"].contains("bits") ? a["encoder"]["bits"].get<int>() : 24;
-            actuator["unit"] = 1.0;
+            actuator["es"] = a["encoder"]["bits_to_position"]["scale"];
+            actuator["eo"] = a["encoder"]["bits_to_position"].value("offset", 0.0);
+            actuator["eb"] = a["encoder"].contains("bits") ? a["encoder"]["bits"].get<int>() : 24;
+            actuator["u"] = 1.0;
+            actuator["b2cs"] = a["drive"]["bits_to_current"]["scale"];
+            actuator["b2co"] = a["drive"]["bits_to_current"].value("offset", 0.0);
+            actuator["c2bs"] = a["drive"]["current_to_bits"]["scale"];
+            actuator["c2bo"] = a["drive"]["current_to_bits"].value("offset", 0.0);
+            actuator["n2cs"] = a["drive"]["effort_to_current"]["scale"];
+            actuator["n2co"] = a["drive"]["effort_to_current"].value("offset", 0.0);
             out.push_back(actuator);
         }
     }
 
-    return out.dump();
+    return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
 }
 
 
@@ -404,6 +400,15 @@ bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rat
 
     if (use_si_units){
         parsed_json_file = parse_robot_config_json(json_path);
+        if (parsed_json_file.empty()) {
+            cerr << "[ERROR] SI unit conversion requested, but robot config payload is empty" << endl;
+            return false;
+        }
+        if (parsed_json_file.size() + 1 > UDP_REAL_MTU) {
+            cerr << "[ERROR] Robot config payload is too large for one UDP packet: "
+                 << parsed_json_file.size() + 1 << " bytes, max " << UDP_REAL_MTU << endl;
+            return false;
+        }
     }
 
     sm_state = SM_SEND_READY_STATE_TO_PS;
@@ -425,7 +430,10 @@ bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rat
                     }
 
                     if (use_si_units){
-                        udp_transmit(sock_id, (void *)parsed_json_file.c_str(), parsed_json_file.size() + 1);
+                        if (!udp_transmit(sock_id, (void *)parsed_json_file.c_str(), parsed_json_file.size() + 1)) {
+                            cerr << "[ERROR] Failed to send robot config payload to Zynq" << endl;
+                            return false;
+                        }
                     }
                 }
                 sm_state = SM_RECV_DATA_COLLECTION_META_DATA;

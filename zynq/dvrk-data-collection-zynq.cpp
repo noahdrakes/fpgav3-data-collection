@@ -600,6 +600,9 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
         if (actuator_json.contains("Enc_B2P")) {
             actuator.Enc_B2P.Scale = actuator_json["Enc_B2P"].value("Scale", 0.0);
             actuator.Enc_B2P.Offset = actuator_json["Enc_B2P"].value("Offset", 0.0);
+        } else if (actuator_json.contains("es")) {
+            actuator.Enc_B2P.Scale = actuator_json.value("es", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json.value("eo", 0.0);
         } else {
             actuator.Enc_B2P.Scale = actuator_json.value("enc_scale", 0.0);
             actuator.Enc_B2P.Offset = actuator_json.value("enc_offset", 0.0);
@@ -608,6 +611,9 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
         if (actuator_json.contains("Curr_B2C")) {
             actuator.Curr_B2C.Scale = actuator_json["Curr_B2C"].value("Scale", 0.0);
             actuator.Curr_B2C.Offset = actuator_json["Curr_B2C"].value("Offset", 0.0);
+        } else if (actuator_json.contains("b2cs")) {
+            actuator.Curr_B2C.Scale = actuator_json.value("b2cs", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json.value("b2co", 0.0);
         } else {
             actuator.Curr_B2C.Scale = actuator_json.value("cur_scale", 0.0);
             actuator.Curr_B2C.Offset = actuator_json.value("cur_offset", 0.0);
@@ -616,6 +622,9 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
         if (actuator_json.contains("Curr_C2B")) {
             actuator.Curr_C2B.Scale = actuator_json["Curr_C2B"].value("Scale", 1.0);
             actuator.Curr_C2B.Offset = actuator_json["Curr_C2B"].value("Offset", 0.0);
+        } else if (actuator_json.contains("c2bs")) {
+            actuator.Curr_C2B.Scale = actuator_json.value("c2bs", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json.value("c2bo", 0.0);
         } else {
             actuator.Curr_C2B.Scale = actuator_json.value("curr_c2b_scale", 1.0);
             actuator.Curr_C2B.Offset = actuator_json.value("curr_c2b_offset", 0.0);
@@ -624,6 +633,9 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
         if (actuator_json.contains("Curr_Nm2C")) {
             actuator.Curr_Nm2C.Scale = actuator_json["Curr_Nm2C"].value("Scale", 1.0);
             actuator.Curr_Nm2C.Offset = actuator_json["Curr_Nm2C"].value("Offset", 0.0);
+        } else if (actuator_json.contains("n2cs")) {
+            actuator.Curr_Nm2C.Scale = actuator_json.value("n2cs", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json.value("n2co", 0.0);
         } else {
             actuator.Curr_Nm2C.Scale = actuator_json.value("curr_nm2c_scale", 1.0);
             actuator.Curr_Nm2C.Offset = actuator_json.value("curr_nm2c_offset", 0.0);
@@ -644,8 +656,8 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
             actuator.Pot_V2P.Scale = actuator_json.value("pot_v2p_scale", 0.0);
             actuator.Pot_V2P.Offset = actuator_json.value("pot_v2p_offset", 0.0);
         }
-        actuator.midrange = std::pow(2.0, actuator_json.value("enc_bits", 24) - 1);
-        actuator.unit = actuator_json.value("unit", M_PI / 180.0);
+        actuator.midrange = std::pow(2.0, actuator_json.value("eb", actuator_json.value("enc_bits", 24)) - 1);
+        actuator.unit = actuator_json.value("u", actuator_json.value("unit", M_PI / 180.0));
     }
 
     return result;
