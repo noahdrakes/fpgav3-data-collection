@@ -49,8 +49,10 @@ def unitConvert(configuration, fileName):
         print("Enc_B2P Scale: ", Enc_B2P[i]['Scale'])
         print("Enc_B2P Offset: ", Enc_B2P[i]['Offset'])
         
-        print("CURR_B2C: ", Curr_B2C[i]['Scale'])
-        print("CURR_C2B: ", Curr_C2B[i]['Scale'])
+        print("CURR_B2C scale: ", Curr_B2C[i]['Scale'])
+        print("CURR_B2C offset: ", Curr_B2C[i]['Offset'])
+        print("CURR_C2B scale: ", Curr_C2B[i]['Scale'])
+        print("CURR_C2B offset: ", Curr_C2B[i]['Offset'])
         print("Nm2C: ", Curr_Nm2C[i]['Scale'])
         # print("measured torque offset: ")
         Pot_B2V[i] = Actuators[i]['Pot']['BitsToVoltage']
