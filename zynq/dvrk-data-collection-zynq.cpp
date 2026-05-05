@@ -420,11 +420,12 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
-            int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i);
+            int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i) + dvrk_controller.Board->GetEncoderMidRange();
+            printf("encoder_pos first %d: %i\n", i, encoder_pos);
 
             if (use_si_units) {
                 float encoder_pos_si = convert_enc_pos_to_si_units(cfg, encoder_pos, i);
-                printf("ENCODER POS %d: %f", i, encoder_pos_si);
+                printf("ENCODER POS %d: %f\n", i, encoder_pos_si);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos_si);
             } else {
                 data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
@@ -437,7 +438,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
             if (use_si_units) {
                 float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, encoder_velocity_float, i);
-                printf("ENCODER VEL %d: %f", i, encoder_velocity_si);
+                printf("ENCODER VEL %d: %f\n", i, encoder_velocity_si);
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_si);
             } else {
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
@@ -453,7 +454,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
             if (use_si_units) {
                 float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
-                printf("measured torque %d: %f", motor_torque);
+                printf("measured torque %d: %f\n", i,motor_torque);
                 float cmd_torque   = convert_torque_command_to_si_units(cfg, cmd_curr, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);

@@ -33,13 +33,10 @@ static double infer_midrange(const json& encoder_json) {
 }
 
 static double unit_to_si_factor(const std::string& unit_str, size_t actuator_index) {
-    if (unit_str == "deg" || unit_str == "REVOLUTE") {
+    if (unit_str == "REVOLUTE") {
         return M_PI / 180.0;
     }
-    if (unit_str == "rad") {
-        return 1.0;
-    }
-    if (unit_str == "mm" || unit_str == "PRISMATIC") {
+    if (unit_str == "PRISMATIC") {
         return 0.001;
     }
     throw std::runtime_error("Unknown encoder unit '" + unit_str + "' for actuator " + std::to_string(actuator_index));

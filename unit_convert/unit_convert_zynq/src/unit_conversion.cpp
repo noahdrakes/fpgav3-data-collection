@@ -4,6 +4,14 @@
 // converts encoder counts to encoder position (si units)
 float convert_enc_pos_to_si_units(RobotConfig cfg, int32_t raw_encoder_counts, uint8_t idx){
 
+        printf("PRINTING cfg elements\n");
+        printf("---------------------------\n");
+        printf("encoder idx: %d\n", idx);
+        printf("raw encoder counts: %X\n", raw_encoder_counts);
+        printf("midrange: %f\n",cfg.actuators[idx].midrange);
+        printf("Enc_B2P.Scale: %f\n", cfg.actuators[idx].Enc_B2P.Scale);
+        printf("unit: %f\n", cfg.actuators[idx].unit);
+
         return (raw_encoder_counts - cfg.actuators[idx].midrange) * cfg.actuators[idx].Enc_B2P.Scale * cfg.actuators[idx].unit;
 }
 
