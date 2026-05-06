@@ -285,7 +285,7 @@ void DataCollection::process_and_write_data() {
 void DataCollection::handle_packet_timeout() {
     packet_misses_counter++;
 
-    if (packet_misses_counter >= 100000 && udp_data_packets_recvd_count != 0) {
+    if (packet_misses_counter >= 1000000 && udp_data_packets_recvd_count != 0) {
         std::cerr << "[ERROR] Capture timeout. 100,000 data packet misses" << std::endl;
         std::cerr << "Restart Zynq and Host programs" << std::endl;
         sm_state = SM_CLOSE_SOCKET;

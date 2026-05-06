@@ -3,15 +3,7 @@
 
 // converts encoder counts to encoder position (si units)
 float convert_enc_pos_to_si_units(RobotConfig cfg, int32_t raw_encoder_counts, uint8_t idx){
-
-        printf("PRINTING cfg elements\n");
-        printf("---------------------------\n");
-        printf("encoder idx: %d\n", idx);
-        printf("raw encoder counts: %X\n", raw_encoder_counts);
-        printf("midrange: %f\n",cfg.actuators[idx].midrange);
-        printf("Enc_B2P.Scale: %f\n", cfg.actuators[idx].Enc_B2P.Scale);
-        printf("unit: %f\n", cfg.actuators[idx].unit);
-
+        
         return (raw_encoder_counts - cfg.actuators[idx].midrange) * cfg.actuators[idx].Enc_B2P.Scale * cfg.actuators[idx].unit;
 }
 
@@ -24,12 +16,10 @@ float convert_enc_vel_to_si_units(RobotConfig cfg, float raw_encoder_velocity, u
 
 float convert_torque_to_si_units(RobotConfig cfg, uint16_t raw_current, uint8_t idx){
 
-        return ((raw_current * cfg.actuators[idx].Curr_B2C.Scale) + cfg.actuators[idx].Curr_B2C.Offset) /
-               cfg.actuators[idx].Curr_Nm2C.Scale;
+        return ((raw_current * cfg.actuators[idx].Curr_B2C.Scale) + cfg.actuators[idx].Curr_B2C.Offset) / cfg.actuators[idx].Curr_Nm2C.Scale;
 }
 
 float convert_torque_command_to_si_units(RobotConfig cfg, uint16_t raw_motor_status, uint8_t idx){
 
-        return ((raw_motor_status - cfg.actuators[idx].Curr_C2B.Offset) / cfg.actuators[idx].Curr_C2B.Scale) /
-               cfg.actuators[idx].Curr_Nm2C.Scale;
+        return ((raw_motor_status - cfg.actuators[idx].Curr_C2B.Offset) / cfg.actuators[idx].Curr_C2B.Scale) / cfg.actuators[idx].Curr_Nm2C.Scale;
 }
