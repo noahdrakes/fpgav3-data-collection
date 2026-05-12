@@ -25,6 +25,10 @@ http://www.cisst.org/cisst/license.txt.
 #include <chrono>
 #include <pthread.h>
 #include <atomic>
+#include <cmath>
+#include <robot_config.h>
+#include <nlohmann/json.hpp>
+#include "unit_conversion.h"
 
 // mmap mio pins
 #include <stdio.h>
@@ -56,24 +60,29 @@ volatile uint32_t *GPIO_MEM_REGION;
 
 // FLAG for including Processor IO in data packets
 bool use_ps_io_flag = false;
-bool use_pot_flag = true;
+// FLAG for including joint Potentiometer readings in data packets
+bool use_pot_flag = false;
+
+bool use_si_units = false;
+
+RobotConfig cfg;
 
 ///////////////////////////////////
 ///// STATE MACHINE VARIABLES /////
 //////////////////////////////////
 
-// Double Buffer Struct handling double buffer between collecting and transmitting data between 
+// Double Buffer Struct handling double buffer between collecting and transmitting data between
 // threads
 struct Double_Buffer_Info {
     uint32_t double_buffer[2][UDP_MAX_PACKET_SIZE/4]; //note: changed from 1500 which makes sense
-    uint16_t buffer_size; 
+    uint16_t buffer_size;
     uint8_t prod_buf;
     uint8_t cons_buf;
-    atomic_uint8_t cons_busy; 
+    atomic_uint8_t cons_busy;
 };
 
 // have methods return new state
-// slim down sm struct to non local 
+// slim down sm struct to non local
 
 DataCollectionMeta data_collection_meta;
 Double_Buffer_Info db;
@@ -82,13 +91,13 @@ char recvd_cmd[CMD_MAX_STRING_SIZE] = {0};
 
 struct Dvrk_Controller {
     BasePort *Port;
-    AmpIO *Board;   
+    AmpIO *Board;
 } dvrk_controller;
 
 struct SM{
     // states
     int state = 0;
-    int last_state = 0;  
+    int last_state = 0;
 
     // return codes
     int ret = 0;
@@ -96,19 +105,19 @@ struct SM{
 };
 
 
-// DEBUGGING VARIABLES 
+// DEBUGGING VARIABLES
 int data_packet_count = 0;
 int sample_count = 0;
 
-// Motor Current/Status arrays to store data 
+// Motor Current/Status arrays to store data
 // for emio timeout error
-int32_t emio_read_error_counter = 0; 
+int32_t emio_read_error_counter = 0;
 
-// last timestamp from last capture
+// start time for data collection timestamps
 double last_timestamp = 0;
 
 // timespec vaiables for getting timestamp using gettime() method
-// with CLOCK_MONOTONIC_RAW. 
+// with CLOCK_MONOTONIC_RAW.
 
 timespec t_data_collection_start;
 
@@ -118,7 +127,7 @@ timespec deadline;
 // expected period of sample capture
 long period_ns;
 
-// global sample rate variable to change sample rate
+
 int SAMPLE_RATE = 0;
 bool useSampleRate = false;
 
@@ -132,8 +141,6 @@ enum DataCollectionStateMachine {
     SM_WAIT_FOR_HOST_HANDSHAKE,
     SM_WAIT_FOR_HOST_FLAG_CMD,
     SM_WAIT_FOR_HOST_FLAG_VALUE,
-    SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD,
-    SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE,
     SM_WAIT_FOR_HOST_START_CMD,
     SM_START_DATA_COLLECTION,
     SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD,
@@ -245,8 +252,8 @@ int udp_nonblocking_receive(UDP_Info *udp_host, void *data, int size)
     struct timeval timeout;
 
     // Timeout values
-    timeout.tv_sec = 0;   
-    timeout.tv_usec = 0;    
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
 
     int max_fd = udp_host->socket + 1;
     int activity = select(max_fd, &readfds, NULL, NULL, &timeout);
@@ -302,7 +309,7 @@ static bool initiate_socket_connection(int &host_socket)
     struct sockaddr_in serverAddr;
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(12345); 
+    serverAddr.sin_port = htons(12345);
     serverAddr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(host_socket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
@@ -322,15 +329,17 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
 
     // 1 quadlet = 4 bytes
 
-    // Timestamp (Double -> 64 bits stored as two seperate quadlets)                                                           [1 quadlet]
+    // Timestamp (Double -> 64 bits stored as two separate quadlets)               [2 quadlets]
     // Encoder Position (32 * num of encoders)                                      [1 quadlet * num of encoders]
     // Encoder Velocity Predicted (64 * num of encoders -> truncated to 32bits)     [1 quadlet * num of encoders]
-    // Motur Current and Motor Status (32 * num of Motors -> each are 16 bits)      [1 quadlet * num of motors]
-    // Digtial IO Values  (optional, used if PS IO is enabled ) 32 bits             [1 quadlet * digital IO]
-    // MIO Pins (optional, used if PS IO is enabled ) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]  
-    // POT pins (optional, used if Pot is enabled) num_encoders * 16 bits    
-    
-    int default_quadlets_per_sample = (2 + (2*(num_encoders)) + (num_motors));
+    // Motor Current and Motor Status (32 * num of Motors -> each are 16 bits)      [1 quadlet * num of motors]
+    //   (SI mode: motor_torque + cmd_torque each as float -> 2 quadlets per motor)
+    // Digital IO Values  (optional, used if PS IO is enabled) 32 bits             [1 quadlet * digital IO]
+    // MIO Pins (optional, used if PS IO is enabled) 4 bits -> pad 32 bits         [1 quadlet * MIO PINS]
+    // POT pins (optional, used if Pot is enabled) num_motors * 16 bits
+
+    int motor_quadlets = use_si_units ? (2 * num_motors) : num_motors;
+    int default_quadlets_per_sample = (2 + (2*(num_encoders)) + motor_quadlets);
     int quadlets_per_sample = default_quadlets_per_sample;
 
     if (use_ps_io_flag){
@@ -338,7 +347,7 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
     }
 
     if (use_pot_flag) {
-        quadlets_per_sample += (1 * num_encoders);
+        quadlets_per_sample += (1 * num_motors);
     }
 
     return quadlets_per_sample;
@@ -356,19 +365,18 @@ static uint16_t calculate_quadlets_per_packet(uint8_t num_encoders, uint8_t num_
     return (calculate_samples_per_packet(num_encoders, num_motors) * calculate_quadlets_per_sample(num_encoders, num_motors));
 }
 
-// Compute elapsed seconds between two timespecs
 static double ts_diff_s(const timespec &start, const timespec &end) {
     time_t  dsec  = end.tv_sec  - start.tv_sec;
     long    dnsec = end.tv_nsec - start.tv_nsec;
     return double(dsec) + double(dnsec) * 1e-9;
 }
 
+
 // loads data buffer for data collection
     // size of the data buffer is dependent on encoder count and motor count
     // see calculate_quadlets_per_sample method for data formatting
 static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_packet, uint8_t num_encoders, uint8_t num_motors)
-{   
-
+{
     if (data_packet == NULL) {
         cout << "[ERROR - load_data_packet] databuffer pointer is null" << endl;
         return false;
@@ -382,7 +390,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     uint16_t samples_per_packet = calculate_samples_per_packet(num_encoders, num_motors);
     uint16_t count = 0;
 
-    // CAPTURE DATA 
+    // CAPTURE DATA
     for (int j = 0; j < samples_per_packet; j++) {
 
         timespec t0;
@@ -407,33 +415,50 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         uint32_t timestamp_high = (timestamp_uint64  >> 32);
         uint32_t timestamp_low =  (uint32_t) (timestamp_uint64 & 0xFFFFFFFF);
 
-        // float time_elapsed_float = static_cast<float>(time_elapsed);
         data_packet[count++] = timestamp_high;
         data_packet[count++] = timestamp_low;
 
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
-            int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i);
-            data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
+            int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i) + dvrk_controller.Board->GetEncoderMidRange();
+            printf("encoder_pos first %d: %i\n", i, encoder_pos);
+
+            if (use_si_units) {
+                float encoder_pos_si = convert_enc_pos_to_si_units(cfg, encoder_pos, i);
+                printf("ENCODER POS %d: %f\n", i, encoder_pos_si);
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos_si);
+            } else {
+                data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
+            }
         }
 
         // DATA 3: encoder velocity
         for (int i = 0; i < num_encoders; i++) {
-            float encoder_velocity_float= static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
-            data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
+            float encoder_velocity_float = static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
+
+            if (use_si_units) {
+                float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, encoder_velocity_float, i);
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_si);
+            } else {
+                data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
+            }
         }
 
-        // DATA 4 & 5: motor current and motor status (for num_motors)
+        // DATA 4 & 5: motor current and commanded current
         for (int i = 0; i < num_motors; i++) {
-            uint32_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); 
-            // uint32_t motor_status = dvrk_controller.Board->GetMotorStatus(i);
+            uint32_t raw_quadlet;
+            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_quadlet);
+            uint16_t motor_curr = (uint16_t)(raw_quadlet & 0x0000FFFF);
+            uint16_t cmd_curr   = (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
 
-            uint32_t raw_cmd_current;
-            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_cmd_current);
-            // int16_t raw_cmd_current_16_bit = static_cast<int16_t>(raw_cmd_current);
-            // uint16_t cmd_current_casted = *reinterpret_cast<uint16_t *>(&raw_cmd_current_16_bit);
-  
-            data_packet[count++] = (uint32_t)(((raw_cmd_current & 0x0000FFFF) << 16) | (motor_curr & 0x0000FFFF));
+            if (use_si_units) {
+                float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
+                float cmd_torque   = convert_torque_command_to_si_units(cfg, cmd_curr, i);
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
+                data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);
+            } else {
+                data_packet[count++] = (uint32_t)(((uint32_t)cmd_curr << 16) | motor_curr);
+            }
         }
 
         if (use_ps_io_flag){
@@ -442,21 +467,19 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         }
 
         if (use_pot_flag){
-            for (int i = 0; i < num_encoders; i++) {
+            for (int i = 0; i < num_motors; i++) {
                 data_packet[count++] = dvrk_controller.Board->GetAnalogInput(i);
             }
         }
 
-        
         if (useSampleRate){
-            
             deadline.tv_nsec += period_ns;
             if (deadline.tv_nsec >= 1'000'000'000) {
                 deadline.tv_sec++;
                 deadline.tv_nsec -= 1'000'000'000;
             }
 
-            // 4) busy spin until deadline, subtracting work_ns if you like
+            // busy spin until deadline
             timespec now;
             do {
                 clock_gettime(CLOCK_MONOTONIC_RAW, &now);
@@ -467,7 +490,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         sample_count++;
     }
 
-    return true;    
+    return true;
 }
 
 void package_meta_data(DataCollectionMeta *dc_meta, AmpIO *board)
@@ -501,14 +524,14 @@ void *consume_data(void *arg)
     while (!stop_data_collection_flag) {
 
         if (db->prod_buf != db->cons_buf) {
-            
-            db->cons_busy = 1; 
+
+            db->cons_busy = 1;
             udp_transmit(&udp_host, db->double_buffer[db->cons_buf], db->buffer_size);
             data_packet_count++;
-            db->cons_busy = 0; 
+            db->cons_busy = 0;
 
             db->cons_buf = (db->cons_buf + 1) % 2;
-        }   
+        }
     }
 
     return nullptr;
@@ -522,7 +545,8 @@ SM wait_for_host_handshake( SM sm ){
         if (strcmp(recvd_cmd,  HOST_READY_CMD) == 0) {
             cout << "Received Message - " <<  HOST_READY_CMD << endl;
             sm.state = SM_WAIT_FOR_HOST_FLAG_CMD;
-        } else {
+        }
+        else {
             sm.ret = SM_OUT_OF_SYNC;
             sm.last_state = sm.state;
             sm.state = SM_TERMINATE;
@@ -566,24 +590,121 @@ SM wait_for_host_flag_cmd(SM sm){
     return sm;
 }
 
+static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
+    nlohmann::json j = nlohmann::json::parse(json_str);
+    RobotConfig result;
+    result.actuators.resize(j.size());
+
+    for (size_t i = 0; i < j.size(); i++) {
+        auto& actuator = result.actuators[i];
+        const auto& actuator_json = j[i];
+
+        if (actuator_json.contains("Enc_B2P")) {
+            actuator.Enc_B2P.Scale = actuator_json["Enc_B2P"].value("Scale", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json["Enc_B2P"].value("Offset", 0.0);
+        } else if (actuator_json.contains("es")) {
+            actuator.Enc_B2P.Scale = actuator_json.value("es", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json.value("eo", 0.0);
+        } else {
+            actuator.Enc_B2P.Scale = actuator_json.value("enc_scale", 0.0);
+            actuator.Enc_B2P.Offset = actuator_json.value("enc_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_B2C")) {
+            actuator.Curr_B2C.Scale = actuator_json["Curr_B2C"].value("Scale", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json["Curr_B2C"].value("Offset", 0.0);
+        } else if (actuator_json.contains("b2cs")) {
+            actuator.Curr_B2C.Scale = actuator_json.value("b2cs", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json.value("b2co", 0.0);
+        } else {
+            actuator.Curr_B2C.Scale = actuator_json.value("cur_scale", 0.0);
+            actuator.Curr_B2C.Offset = actuator_json.value("cur_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_C2B")) {
+            actuator.Curr_C2B.Scale = actuator_json["Curr_C2B"].value("Scale", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json["Curr_C2B"].value("Offset", 0.0);
+        } else if (actuator_json.contains("c2bs")) {
+            actuator.Curr_C2B.Scale = actuator_json.value("c2bs", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json.value("c2bo", 0.0);
+        } else {
+            actuator.Curr_C2B.Scale = actuator_json.value("curr_c2b_scale", 1.0);
+            actuator.Curr_C2B.Offset = actuator_json.value("curr_c2b_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Curr_Nm2C")) {
+            actuator.Curr_Nm2C.Scale = actuator_json["Curr_Nm2C"].value("Scale", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json["Curr_Nm2C"].value("Offset", 0.0);
+        } else if (actuator_json.contains("n2cs")) {
+            actuator.Curr_Nm2C.Scale = actuator_json.value("n2cs", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json.value("n2co", 0.0);
+        } else {
+            actuator.Curr_Nm2C.Scale = actuator_json.value("curr_nm2c_scale", 1.0);
+            actuator.Curr_Nm2C.Offset = actuator_json.value("curr_nm2c_offset", 0.0);
+        }
+
+        if (actuator_json.contains("Pot_B2V")) {
+            actuator.Pot_B2V.Scale = actuator_json["Pot_B2V"].value("Scale", 0.0);
+            actuator.Pot_B2V.Offset = actuator_json["Pot_B2V"].value("Offset", 0.0);
+        } else {
+            actuator.Pot_B2V.Scale = actuator_json.value("pot_b2v_scale", 0.0);
+            actuator.Pot_B2V.Offset = actuator_json.value("pot_b2v_offset", 0.0);
+        }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
+
+        if (actuator_json.contains("Pot_V2P")) {
+            actuator.Pot_V2P.Scale = actuator_json["Pot_V2P"].value("Scale", 0.0);
+            actuator.Pot_V2P.Offset = actuator_json["Pot_V2P"].value("Offset", 0.0);
+        } else {
+            actuator.Pot_V2P.Scale = actuator_json.value("pot_v2p_scale", 0.0);
+            actuator.Pot_V2P.Offset = actuator_json.value("pot_v2p_offset", 0.0);
+        }
+        actuator.midrange = std::pow(2.0, actuator_json.value("eb", actuator_json.value("enc_bits", 24)) - 1);
+        actuator.unit = actuator_json.value("u", actuator_json.value("unit", M_PI / 180.0));
+    }
+
+    return result;
+}
+
 SM wait_for_host_flag_value(SM sm){
     uint8_t flag_cmd = 0x00;
     sm.udp_ret = udp_nonblocking_receive(&udp_host, &flag_cmd, sizeof(flag_cmd));
 
     if (sm.udp_ret > 0) {
         use_ps_io_flag = (flag_cmd & ENABLE_PSIO_MSK);
-        use_pot_flag = (flag_cmd & ENABLE_POT_MSK);
-        useSampleRate = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+        use_pot_flag   = (flag_cmd & ENABLE_POT_MSK);
+        useSampleRate  = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+        use_si_units   = (flag_cmd & ENABLE_SI_UNITS_MSK);
 
         cout << "Received Flag Byte: 0x" << std::hex << static_cast<int>(flag_cmd) << std::dec << endl;
 
-        if (useSampleRate){
-            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
-        } else {
-            if (use_ps_io_flag || use_pot_flag){
-                reset_double_buffer_info(&db, dvrk_controller.Board);
-            }
-            sm.state = SM_SEND_DATA_COLLECTION_METADATA;
+        if (useSampleRate) {
+            int host_sample_rate = 0;
+            do {
+                sm.udp_ret = udp_nonblocking_receive(&udp_host, &host_sample_rate, sizeof(host_sample_rate));
+            } while (sm.udp_ret <= 0);
+
+            SAMPLE_RATE = host_sample_rate;
+            printf("NEW SAMPLE RATE: %d\n", SAMPLE_RATE);
+            use_ps_io_flag = true;
+        }
+
+        if (use_si_units) {
+            char json_buf[4096] = {0};
+            do {
+                sm.udp_ret = udp_nonblocking_receive(&udp_host, json_buf, sizeof(json_buf));
+            } while (sm.udp_ret <= 0);
+
+            cfg = parse_robot_config_from_json_str(json_buf);
+            cout << "Received robot config with " << cfg.actuators.size() << " actuators" << endl;
         }
     }
     else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
@@ -595,54 +716,14 @@ SM wait_for_host_flag_value(SM sm){
         sm.state = SM_TERMINATE;
     }
 
-    return sm;
-}
-
-SM wait_for_host_sample_rate_cmd(SM sm){
-    memset(recvd_cmd, 0, CMD_MAX_STRING_SIZE);
-    sm.udp_ret = udp_nonblocking_receive(&udp_host, recvd_cmd, CMD_MAX_STRING_SIZE);
-
-    if (sm.udp_ret > 0) {
-        if (strcmp(recvd_cmd, HOST_SAMPLE_RATE_CMD) == 0){
-            cout << "Received Message - " << HOST_SAMPLE_RATE_CMD << endl;
-            sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
-        } else {
-            sm.ret = SM_OUT_OF_SYNC;
-            sm.last_state = sm.state;
-            sm.state = SM_TERMINATE;
-        }
-    }
-    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD;
-    }
-    else {
-        sm.ret = SM_UDP_ERROR;
-        sm.last_state = sm.state;
-        sm.state = SM_TERMINATE;
-    }
-
-    return sm;
-}
-
-SM wait_for_host_sample_rate_value(SM sm){
-    int host_sample_rate = 0;
-    sm.udp_ret = udp_nonblocking_receive(&udp_host, &host_sample_rate, sizeof(host_sample_rate));
-
-    if (sm.udp_ret > 0){
-        SAMPLE_RATE = host_sample_rate;
-        printf("NEW SAMPLE RATE: %d\n", SAMPLE_RATE);
-
-        // Keep existing behavior when sample-rate mode is enabled.
-        use_ps_io_flag = true;
-
-        if (use_ps_io_flag){
+        if (use_ps_io_flag || use_pot_flag) {
             reset_double_buffer_info(&db, dvrk_controller.Board);
         }
 
         sm.state = SM_SEND_DATA_COLLECTION_METADATA;
     }
     else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
-        sm.state = SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE;
+        sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
     }
     else {
         sm.ret = SM_UDP_ERROR;
@@ -794,13 +875,13 @@ SM check_for_stop_data_collection(SM sm, pthread_t consumer_t){
             cout << "AVERAGE SAMPLE RATE: " << (float) (sample_count / last_timestamp) << "Hz" << endl;
             cout << "------------------------------------------------" << endl << endl;
 
-            emio_read_error_counter = 0; 
+            emio_read_error_counter = 0;
             data_packet_count = 0;
             sample_count = 0;
 
             sm.state = SM_WAIT_FOR_HOST_START_CMD;
             cout << "Waiting for command from host..." << endl;
-            
+
         } else {
             sm.ret = SM_OUT_OF_SYNC;
             sm.last_state = sm.state;
@@ -827,7 +908,7 @@ SM start_data_collection(SM sm){
         // compute the nanoseconds between samples
         period_ns = 1'000'000'000L / SAMPLE_RATE;
     }
-   
+
     sm.state = SM_START_CONSUMER_THREAD;
     return sm;
 }
@@ -841,7 +922,7 @@ SM terminate_data_collection(SM sm){
         cout << "At STATE " << sm.last_state << " ";
 
         switch (sm.ret){
-            
+
             case SM_OUT_OF_SYNC:
                 cout << "Zynq of sync with Host. Received unexpected command: " << recvd_cmd << endl;
                 break;
@@ -876,7 +957,7 @@ static int dataCollectionStateMachine()
 {
     SM sm;
     pthread_t consumer_t;
-    
+
     cout << "Starting Handshake Routine..." << endl << endl;
     cout << "Start Data Collection Client on HOST to complete handshake..." << endl;
 
@@ -902,14 +983,6 @@ static int dataCollectionStateMachine()
 
             case SM_WAIT_FOR_HOST_FLAG_VALUE:
                 sm = wait_for_host_flag_value(sm);
-                break;
-
-            case SM_WAIT_FOR_HOST_SAMPLE_RATE_CMD:
-                sm = wait_for_host_sample_rate_cmd(sm);
-                break;
-
-            case SM_WAIT_FOR_HOST_SAMPLE_RATE_VALUE:
-                sm = wait_for_host_sample_rate_value(sm);
                 break;
 
             case SM_SEND_DATA_COLLECTION_METADATA:
@@ -941,7 +1014,7 @@ static int dataCollectionStateMachine()
                 break;
 
             case SM_CHECK_FOR_STOP_DATA_COLLECTION_CMD:
-                sm = check_for_stop_data_collection(sm, consumer_t);     
+                sm = check_for_stop_data_collection(sm, consumer_t);
                 break;
 
             case SM_TERMINATE:

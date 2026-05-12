@@ -35,7 +35,7 @@ def unitConvert(configuration, fileName):
     # Equation reference:
     # https://github.com/jhu-saw/sawRobotIO1394/blob/417e6bd88b15dfcc6f9647bc0d677ef097c001cf/core/components/code/mtsRobot1394.cpp#L859C1-L988C2
     Time['TIMESTAMP'] = robot_data['TIMESTAMP']
-    for i in range(len(Actuators)):
+    for i in range(len(Actuators)):  
         Curr_B2C[i] = Actuators[i]['Drive']['BitsToCurrent']
         Curr_C2B[i] = Actuators[i]['Drive']['CurrentToBits']
         Curr_Nm2C[i] = Actuators[i]['Drive']['EffortToCurrent']

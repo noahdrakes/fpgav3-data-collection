@@ -17,6 +17,7 @@ project(dvrkDataCollection-LIB VERSION 0.1.0)
 set(LIB_INCLUDE_DIR "..")
 
 include_directories(${LIB_INCLUDE_DIR})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../unit_convert/unit_convert_zynq/lib/json/single_include)
 
 # Add the source files
 set(SOURCES

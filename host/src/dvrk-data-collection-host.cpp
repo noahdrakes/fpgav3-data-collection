@@ -82,7 +82,7 @@ static void printUsage(const char *progName)
     cout << endl;
     cout << "                 dVRK Data Collection Program" << endl;
     cout << "|-----------------------------------------------------------------------" << endl;
-    cout << "|Usage: " << progName << " <boardID> [-t <seconds>] [-s <Hz>] [-i] [-p]" << endl;
+    cout << "|Usage: " << progName << " <boardID> [-t <seconds>] [-s <Hz>] [-i] [-p] [-c <json>]" << endl;
     cout << "|" << endl;
     cout << "|Arguments:" << endl;
     cout << "|  <boardID>          Required. ID of the board to connect to." << endl;
@@ -92,6 +92,7 @@ static void printUsage(const char *progName)
     cout << "|  -s <Hz>            Optional. Sample rate in Hz (integer)." << endl;
     cout << "|  -i                 Optional. Include PS IO in data packet." << endl;
     cout << "|  -p                 Optional. Include potentiometer readings in data packet." << endl;
+    cout << "|  -c <json_path>     Optional. Path to robot config JSON for SI unit conversion." << endl;
     cout << "|  -h                 Show this help message." << endl;
     cout << "|" << endl;
     cout << "|[NOTE] Ensure the server is started before running the client." << endl;
@@ -122,6 +123,8 @@ int main(int argc, char *argv[])
     bool timedCaptureFlag = false;
     bool use_ps_io_flag = false;
     bool use_pot_flag = false;
+    bool use_si_units_flag = false;
+    string robot_config_path = "";
     bool use_sample_rate = false;
     uint8_t options_mask = 0x00;
     uint8_t boardID = 0;
@@ -153,7 +156,7 @@ int main(int argc, char *argv[])
     opterr = 0;
     optind = 1;
     int opt = 0;
-    while ((opt = getopt(argc - 1, argv + 1, "t:s:iph")) != -1) {
+    while ((opt = getopt(argc - 1, argv + 1, "t:s:ipc:h")) != -1) {
         switch (opt) {
             case 't':
                 if (!isFloat(optarg)) {
@@ -185,12 +188,18 @@ int main(int argc, char *argv[])
                 cout << "Potentiometer readings will be included in data packet!" << endl;
                 break;
 
+            case 'c':
+                use_si_units_flag = true;
+                robot_config_path = optarg;
+                cout << "Converting data to SI Units!" << endl;
+                break;
+
             case 'h':
                 printUsage(argv[0]);
                 return 0;
 
             case '?':
-                if (optopt == 't' || optopt == 's') {
+                if (optopt == 't' || optopt == 's' || optopt == 'c') {
                     cout << "[ERROR] Option -" << static_cast<char>(optopt) << " requires a value" << endl;
                 } else {
                     cout << "[ERROR] Invalid arg: -" << static_cast<char>(optopt) << endl;
@@ -219,13 +228,16 @@ int main(int argc, char *argv[])
     if (use_sample_rate) {
         options_mask |= ENABLE_SAMPLE_RATE_MSK;
     }
+    if (use_si_units_flag) {
+        options_mask |= ENABLE_SI_UNITS_MSK;
+    }
 
     bool ret;
 
     DataCollection *DC = new DataCollection();
     bool stop_data_collection = false;
 
-    if (!DC->init(boardID, options_mask, sample_rate)) {
+    if (!DC->init(boardID, options_mask, sample_rate, robot_config_path)) {
         return -1;
     }
 
@@ -246,11 +258,11 @@ int main(int argc, char *argv[])
         } else {
             cout << "[error] Invalid character. Type either 'y' or 'n' and press enter: " << endl;
             stop_data_collection = false;
-            continue;         
+            continue;
         }
 
         cout << endl;
-    
+
         if (!DC->start()) {
             return -1;
         }
@@ -263,7 +275,7 @@ int main(int argc, char *argv[])
             while(1) {
                 if (isExitKeyPressed()) {
                     break;
-                } 
+                }
             }
         }
 
