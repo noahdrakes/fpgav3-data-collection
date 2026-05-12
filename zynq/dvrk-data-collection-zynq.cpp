@@ -650,6 +650,15 @@ static RobotConfig parse_robot_config_from_json_str(const char* json_str) {
             actuator.Pot_B2V.Scale = actuator_json.value("pot_b2v_scale", 0.0);
             actuator.Pot_B2V.Offset = actuator_json.value("pot_b2v_offset", 0.0);
         }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
 
         if (actuator_json.contains("Pot_V2P")) {
             actuator.Pot_V2P.Scale = actuator_json["Pot_V2P"].value("Scale", 0.0);
@@ -697,6 +706,15 @@ SM wait_for_host_flag_value(SM sm){
             cfg = parse_robot_config_from_json_str(json_buf);
             cout << "Received robot config with " << cfg.actuators.size() << " actuators" << endl;
         }
+    }
+    else if (sm.udp_ret == UDP_DATA_IS_NOT_AVAILABLE_WITHIN_TIMEOUT || sm.udp_ret == UDP_NON_UDP_DATA_IS_AVAILABLE) {
+        sm.state = SM_WAIT_FOR_HOST_FLAG_VALUE;
+    }
+    else {
+        sm.ret = SM_UDP_ERROR;
+        sm.last_state = sm.state;
+        sm.state = SM_TERMINATE;
+    }
 
         if (use_ps_io_flag || use_pot_flag) {
             reset_double_buffer_info(&db, dvrk_controller.Board);
