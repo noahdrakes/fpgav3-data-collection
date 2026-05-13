@@ -133,12 +133,6 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
                 proc_sample_raw.pot_values[i] = static_cast<uint16_t>(data_packet[idx++]);
         }
     }
-
-    if (use_pot){
-        for (int i = 0; i < dc_meta.num_encoders; i++){
-            proc_sample.pot_values[i] = data_packet[idx++];
-        }  
-    }
 }
 
 int DataCollection::collect_data() {
@@ -237,12 +231,6 @@ void DataCollection::write_csv_headers() {
         }
     }
 
-    if (use_pot){
-        for (int i = 1; i <= dc_meta.num_encoders; i++){
-            myFile << ",POT_" << i;
-        }
-    }
-
     myFile << std::endl;
 }
 
@@ -288,14 +276,6 @@ void DataCollection::process_and_write_data() {
                     myFile << "," << proc_sample_raw.pot_values[j];
             }
             memset(&proc_sample_raw, 0, sizeof(proc_sample_raw));
-        }
-
-        if (use_pot) {
-            myFile << ",";
-            for (int j = 0; j < dc_meta.num_encoders; j++) {
-                myFile << proc_sample.pot_values[j];
-                if (j < dc_meta.num_encoders - 1) myFile << ",";
-            }
         }
 
         myFile << std::endl;
@@ -381,6 +361,7 @@ void * DataCollection::collect_data_thread(void * args)
     dc->collect_data();
     return nullptr;
 }
+
 
 
 ////////////////////
