@@ -48,7 +48,7 @@ if (Amp1394_HAS_EMIO)
     dvrk-data-collection-zynq.cpp
     ../unit_convert/unit_convert_zynq/src/unit_conversion.cpp
     ../unit_convert/unit_convert_zynq/src/config_loader.cpp
-  )
+  ) 
   target_compile_features(dvrk-data-collection-zynq PRIVATE cxx_std_17)
   
   target_compile_definitions(dvrk-data-collection-zynq PRIVATE
@@ -57,8 +57,21 @@ if (Amp1394_HAS_EMIO)
 
   target_link_libraries(dvrk-data-collection-zynq ${Amp1394_LIBRARIES})
 
+  set (JSON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../unit_convert/unit_convert_zynq/lib/json)
+  if (NOT EXISTS ${JSON_DIR}/include/nlohmann/json.hpp)
+    message (STATUS "nlohmann/json not found, fetching from GitHub...")
+    execute_process (
+      COMMAND git clone --depth 1 --branch v3.11.3
+              https://github.com/nlohmann/json.git ${JSON_DIR}
+      RESULT_VARIABLE GIT_RESULT
+    )
+    if (NOT GIT_RESULT EQUAL 0)
+      message (FATAL_ERROR "Failed to fetch nlohmann/json from GitHub")
+    endif ()
+  endif ()
+
   target_include_directories(dvrk-data-collection-zynq PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../unit_convert/unit_convert_zynq/lib/json/include
+    ${JSON_DIR}/include
   )
 
   install (TARGETS dvrk-data-collection-zynq
