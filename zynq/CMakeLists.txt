@@ -44,18 +44,30 @@ if (Amp1394_HAS_EMIO)
 
   link_directories(${Amp1394_LIBRARY_DIR})
 
+  set (ORT_ROOT "" CACHE PATH "Path to ONNX Runtime root directory")
+  if (NOT ORT_ROOT)
+    message (FATAL_ERROR "ORT_ROOT must be set to your ONNX Runtime root directory")
+  endif ()
+
+  # Declare the imported library target
+  add_library(onnxruntime SHARED IMPORTED)
+  set_target_properties(onnxruntime PROPERTIES
+    IMPORTED_LOCATION ${ORT_ROOT}/build/Release/libonnxruntime.so
+    INTERFACE_INCLUDE_DIRECTORIES ${ORT_ROOT}/include
+  )
+
   add_executable(dvrk-data-collection-zynq
     dvrk-data-collection-zynq.cpp
     ../unit_convert/unit_convert_zynq/src/unit_conversion.cpp
     ../unit_convert/unit_convert_zynq/src/config_loader.cpp
-  ) 
+  )
   target_compile_features(dvrk-data-collection-zynq PRIVATE cxx_std_17)
-  
-  target_compile_definitions(dvrk-data-collection-zynq PRIVATE
-  __GLIBC_USE_C2X_STRTOL=0
-)
 
-  target_link_libraries(dvrk-data-collection-zynq ${Amp1394_LIBRARIES})
+  target_compile_definitions(dvrk-data-collection-zynq PRIVATE
+    __GLIBC_USE_C2X_STRTOL=0
+  )
+
+  target_link_libraries(dvrk-data-collection-zynq PRIVATE ${Amp1394_LIBRARIES} onnxruntime)
 
   set (JSON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../unit_convert/unit_convert_zynq/lib/json)
   if (NOT EXISTS ${JSON_DIR}/include/nlohmann/json.hpp)
@@ -72,6 +84,7 @@ if (Amp1394_HAS_EMIO)
 
   target_include_directories(dvrk-data-collection-zynq PRIVATE
     ${JSON_DIR}/include
+    ${ORT_ROOT}/include/onnxruntime/core/session
   )
 
   install (TARGETS dvrk-data-collection-zynq

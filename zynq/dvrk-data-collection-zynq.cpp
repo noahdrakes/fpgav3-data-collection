@@ -29,6 +29,7 @@ http://www.cisst.org/cisst/license.txt.
 #include <robot_config.h>
 #include <nlohmann/json.hpp>
 #include "unit_conversion.h"
+#include <onnxruntime_cxx_api.h>
 
 // mmap mio pins
 #include <stdio.h>
@@ -170,6 +171,70 @@ struct UDP_Info {
     struct sockaddr_in Addr;
     socklen_t AddrLen;
 } udp_host; // this is global bc there will only be one
+
+struct ORT_Object {
+    std::optional<Ort::Env>                    env;
+    std::optional<Ort::Session>                session;
+    std::optional<Ort::MemoryInfo>             memory_info;
+    std::vector<int64_t>                       input_shape;
+    std::optional<Ort::AllocatedStringPtr>     input_name;
+    std::optional<Ort::AllocatedStringPtr>     output_name;
+};
+
+void contact_detector_init(ORT_Object& ort, const std::string& model_path, int num_threads = 3) {
+    Ort::SessionOptions opts;
+    opts.SetIntraOpNumThreads(num_threads);
+
+    ort.env.emplace(ORT_LOGGING_LEVEL_WARNING, "contact_lstm");
+    ort.session.emplace(*ort.env, model_path.c_str(), opts);
+    ort.memory_info.emplace(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
+    ort.input_shape = {1, 1, 12};
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    ort.input_name.emplace(ort.session->GetInputNameAllocated(0, allocator));
+    ort.output_name.emplace(ort.session->GetOutputNameAllocated(0, allocator));
+}
+
+bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* encoder_vel, const float* torque_feedback){
+
+    uint8_t num_encoders = (uint8_t) board->GetNumEncoders();
+    uint8_t num_motors = (uint8_t) board->GetNumMotors();
+
+    // lets combine the enc velocity and torque into one vector
+
+    std::vector<float> input(num_encoders + num_motors);
+
+    for (int i=0; i<num_encoders; i++){
+        input[i] = encoder_vel[i];
+    }
+
+    for (int i=num_encoders; i < num_encoders + num_motors; i++){
+        input[i] = torque_feedback[i];
+    }
+
+    // normalization stats from training config (normalize=true)
+    const std::array<float, 12> feat_mean = {
+        -0.0002824742114171386f, -3.650841608759947e-05f,  1.22635419756989e-05f,
+         0.001427539624273777f,  -8.851468010107055e-05f,  0.0002031530166277662f,
+        -0.6210437417030334f,    3.9810116291046143f,      -4.167459487915039f,
+        -0.003561527468264103f,   0.006435718387365341f,    0.03592592105269432f
+    };
+    const std::array<float, 12> feat_std = {
+        0.2544010877609253f,  0.1120990440249443f,  0.010202210396528244f,
+        0.2805119752883911f,  0.25634005665779114f, 0.6305540204048157f,
+        1.3269498348236084f,  1.6260298490524292f,  5.9530720710754395f,
+        0.030428461730480194f, 0.03421192616224289f, 0.04092755541205406f
+    };
+
+    std::array<float, 12> normalized;
+    for (int i = 0; i < 12; ++i)
+        normalized[i] = (input[i] - feat_mean[i]) / feat_std[i];
+
+
+    
+
+
+}
 
 
 static int mio_mmap_init()
