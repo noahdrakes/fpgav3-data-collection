@@ -199,16 +199,12 @@ std::optional<ORT_Object> ORT;
 
 bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* encoder_vel, const float* torque_feedback){
 
-    uint8_t num_encoders = (uint8_t) board->GetNumEncoders();
-    uint8_t num_motors = (uint8_t) board->GetNumMotors();
-
-    printf("got encoders\n");
+    uint8_t num_encoders = 6;
+    uint8_t num_motors = 6;
 
     // lets combine the enc velocity and torque into one vector
 
-    cout << "before vector" << endl;
     std::vector<float> input(num_encoders + num_motors);
-    cout << "after vecotr" << endl;
 
     for (int i=0; i<num_encoders; i++){
         input[i] = encoder_vel[i];
@@ -236,9 +232,6 @@ bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* en
     for (int i = 0; i < 12; ++i)
         normalized[i] = (input[i] - feat_mean[i]) / feat_std[i];
 
-    printf("normalize\n");
-
-
 
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         ort.memory_info,
@@ -247,8 +240,6 @@ bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* en
         ort.input_shape.data(),
         ort.input_shape.size()
     );
-
-    printf("instantiate ORT");
 
     const char* input_names[] = {ort.input_name.get()};
     const char* output_names[] = {ort.output_name.get()};
@@ -260,7 +251,7 @@ bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* en
     float contact_prob = output[0];
     int contact_pred = contact_prob >= 0.5f ? 1 : 0;
 
-    cout << "prediction : " << (bool) contact_pred << endl;
+    // cout << "prediction : " << (bool) contact_pred << endl;
 
     return (bool) contact_pred;
 
@@ -490,7 +481,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
     uint16_t samples_per_packet = calculate_samples_per_packet(num_encoders, num_motors);
     uint16_t count = 0;
 
-    printf("inside load data packet\n");
+    // printf("inside load data packet\n");
 
     // CAPTURE DATA
     for (int j = 0; j < samples_per_packet; j++) {
@@ -548,9 +539,10 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 4 & 5: motor current and commanded current
         for (int i = 0; i < num_motors; i++) {
             uint32_t raw_quadlet;
-            dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_quadlet);
-            uint16_t motor_curr = (uint16_t)(raw_quadlet & 0x0000FFFF);
-            uint16_t cmd_curr   = (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
+            // dvrk_controller.Port->ReadQuadlet(dvrk_controller.Port->GetBoardId(0), ((i+1) << 4) | 1, raw_quadlet);
+
+            uint16_t motor_curr = dvrk_controller.Board->GetMotorCurrent(i); // (uint16_t)(raw_quadlet & 0x0000FFFF);
+            uint16_t cmd_curr   = 0; // (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
 
             float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
             contact_torque[i] = motor_torque;
@@ -565,15 +557,13 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         if (use_contact_model){
 
-            printf("using contact model\n");
+            // printf("using contact model\n");
 
             uint32_t contact_pred = (uint32_t) contact_detection_prediction(dvrk_controller.Board, *ORT, contact_velocity, contact_torque);
 
-            printf("we good ?\n");
+            // printf("we good ?\n");
             data_packet[count++] = contact_pred;
         }
-
-        printf("finished loaing contact model\n");
 
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
