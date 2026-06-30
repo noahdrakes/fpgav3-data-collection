@@ -89,5 +89,6 @@ const uint8_t ENABLE_PSIO_MSK = 0x01;
 const uint8_t ENABLE_POT_MSK = 0x02;
 const uint8_t ENABLE_SAMPLE_RATE_MSK = 0x04;
 const uint8_t ENABLE_SI_UNITS_MSK = 0x08;
+const uint8_t ENABLE_CONTACT_DETECTION_MSK = 0x10;
 
 #endif

@@ -105,6 +105,8 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
             proc_sample_si.motor_current[i] = *reinterpret_cast<float*>(&data_packet[idx++]);
             proc_sample_si.motor_status[i]  = *reinterpret_cast<float*>(&data_packet[idx++]);
         }
+        if (use_contact_model)
+            proc_sample_si.contact_prediction = data_packet[idx++];
         if (use_ps_io) {
             proc_sample_si.digital_io = data_packet[idx++];
             proc_sample_si.mio_pins   = data_packet[idx++];
@@ -124,6 +126,8 @@ void DataCollection:: process_sample(uint32_t *data_packet, int start_idx)
             proc_sample_raw.motor_current[i] = (uint16_t)(data_packet[idx] & 0xFFFF);
             idx++;
         }
+        if (use_contact_model)
+            proc_sample_raw.contact_prediction = data_packet[idx++];
         if (use_ps_io) {
             proc_sample_raw.digital_io = data_packet[idx++];
             proc_sample_raw.mio_pins   = data_packet[idx++];
@@ -222,13 +226,13 @@ void DataCollection::write_csv_headers() {
         myFile << "MOTOR_STATUS_" << i;
         if (i < dc_meta.num_motors) myFile << ",";
     }
-    if (use_ps_io) {
+    if (use_contact_model)
+        myFile << ",CONTACT_PREDICTION";
+    if (use_ps_io)
         myFile << ",DIGITAL_IO,MIO_PINS";
-    }
     if (use_pot) {
-        for (int i = 1; i <= dc_meta.num_motors; i++) {
+        for (int i = 1; i <= dc_meta.num_motors; i++)
             myFile << ",POT_" << i;
-        }
     }
 
     myFile << std::endl;
@@ -250,6 +254,8 @@ void DataCollection::process_and_write_data() {
                 myFile << proc_sample_si.motor_status[j];
                 if (j < dc_meta.num_motors - 1) myFile << ",";
             }
+            if (use_contact_model)
+                myFile << "," << proc_sample_si.contact_prediction;
             if (use_ps_io)
                 myFile << "," << proc_sample_si.digital_io << "," << proc_sample_si.mio_pins;
             if (use_pot) {
@@ -269,6 +275,8 @@ void DataCollection::process_and_write_data() {
                 myFile << static_cast<uint16_t>(proc_sample_raw.motor_status[j]);
                 if (j < dc_meta.num_motors - 1) myFile << ",";
             }
+            if (use_contact_model)
+                myFile << "," << proc_sample_raw.contact_prediction;
             if (use_ps_io)
                 myFile << "," << proc_sample_raw.digital_io << "," << proc_sample_raw.mio_pins;
             if (use_pot) {
@@ -384,13 +392,16 @@ bool DataCollection :: init(uint8_t boardID, uint8_t optionsMask, int sample_rat
         return false;
     }
 
-    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK | ENABLE_SI_UNITS_MSK;
+    const uint8_t supported_mask = ENABLE_PSIO_MSK | ENABLE_POT_MSK | ENABLE_SAMPLE_RATE_MSK | ENABLE_SI_UNITS_MSK | ENABLE_CONTACT_DETECTION_MSK;
     options_mask = optionsMask & supported_mask;
 
     use_ps_io = (options_mask & ENABLE_PSIO_MSK) != 0;
     use_pot = (options_mask & ENABLE_POT_MSK) != 0;
     use_sample_rate = (options_mask & ENABLE_SAMPLE_RATE_MSK) != 0;
     use_si_units = (options_mask & ENABLE_SI_UNITS_MSK) != 0;
+    use_contact_model = (options_mask & ENABLE_CONTACT_DETECTION_MSK) != 0;
+
+    printf("USE CONTACT MODEL: %d\n", (bool)use_contact_model);
 
     string parsed_json_file = "";
 

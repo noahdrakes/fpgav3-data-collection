@@ -64,6 +64,11 @@ bool use_ps_io_flag = false;
 // FLAG for including joint Potentiometer readings in data packets
 bool use_pot_flag = false;
 
+// FLAG for including contact model predictions
+bool use_contact_model = false;
+float contact_velocity[16]; // AmpIO::MAX_CHANNELS
+float contact_torque[16];   // AmpIO::MAX_CHANNELS
+
 bool use_si_units = false;
 
 RobotConfig cfg;
@@ -173,43 +178,44 @@ struct UDP_Info {
 } udp_host; // this is global bc there will only be one
 
 struct ORT_Object {
-    std::optional<Ort::Env>                    env;
-    std::optional<Ort::Session>                session;
-    std::optional<Ort::MemoryInfo>             memory_info;
-    std::vector<int64_t>                       input_shape;
-    std::optional<Ort::AllocatedStringPtr>     input_name;
-    std::optional<Ort::AllocatedStringPtr>     output_name;
+    Ort::Env env;
+    Ort::Session session;
+    Ort::MemoryInfo memory_info;
+    std::vector<int64_t> input_shape;
+    Ort::AllocatedStringPtr input_name;
+    Ort::AllocatedStringPtr output_name;
+
+    ORT_Object(const std::string& model_path, int num_threads = 2)
+        : env(ORT_LOGGING_LEVEL_WARNING, "contact_lstm")
+        , session(env, model_path.c_str(), [&]{ Ort::SessionOptions o; o.SetIntraOpNumThreads(num_threads); return o; }())
+        , memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
+        , input_shape({1, 1, 12})
+        , input_name(session.GetInputNameAllocated(0, Ort::AllocatorWithDefaultOptions{}))
+        , output_name(session.GetOutputNameAllocated(0, Ort::AllocatorWithDefaultOptions{}))
+    {}
 };
 
-void contact_detector_init(ORT_Object& ort, const std::string& model_path, int num_threads = 3) {
-    Ort::SessionOptions opts;
-    opts.SetIntraOpNumThreads(num_threads);
-
-    ort.env.emplace(ORT_LOGGING_LEVEL_WARNING, "contact_lstm");
-    ort.session.emplace(*ort.env, model_path.c_str(), opts);
-    ort.memory_info.emplace(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
-    ort.input_shape = {1, 1, 12};
-
-    Ort::AllocatorWithDefaultOptions allocator;
-    ort.input_name.emplace(ort.session->GetInputNameAllocated(0, allocator));
-    ort.output_name.emplace(ort.session->GetOutputNameAllocated(0, allocator));
-}
+std::optional<ORT_Object> ORT;
 
 bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* encoder_vel, const float* torque_feedback){
 
     uint8_t num_encoders = (uint8_t) board->GetNumEncoders();
     uint8_t num_motors = (uint8_t) board->GetNumMotors();
 
+    printf("got encoders\n");
+
     // lets combine the enc velocity and torque into one vector
 
+    cout << "before vector" << endl;
     std::vector<float> input(num_encoders + num_motors);
+    cout << "after vecotr" << endl;
 
     for (int i=0; i<num_encoders; i++){
         input[i] = encoder_vel[i];
     }
 
     for (int i=num_encoders; i < num_encoders + num_motors; i++){
-        input[i] = torque_feedback[i];
+        input[i] = torque_feedback[i - num_encoders];
     }
 
     // normalization stats from training config (normalize=true)
@@ -230,9 +236,33 @@ bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* en
     for (int i = 0; i < 12; ++i)
         normalized[i] = (input[i] - feat_mean[i]) / feat_std[i];
 
+    printf("normalize\n");
 
-    
 
+
+    Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+        ort.memory_info,
+        normalized.data(),
+        normalized.size(),
+        ort.input_shape.data(),
+        ort.input_shape.size()
+    );
+
+    printf("instantiate ORT");
+
+    const char* input_names[] = {ort.input_name.get()};
+    const char* output_names[] = {ort.output_name.get()};
+
+    auto outputs = ort.session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+
+    float* output = outputs[0].GetTensorMutableData<float>();
+
+    float contact_prob = output[0];
+    int contact_pred = contact_prob >= 0.5f ? 1 : 0;
+
+    cout << "prediction : " << (bool) contact_pred << endl;
+
+    return (bool) contact_pred;
 
 }
 
@@ -415,6 +445,10 @@ static uint16_t calculate_quadlets_per_sample(uint8_t num_encoders, uint8_t num_
         quadlets_per_sample += (1 * num_motors);
     }
 
+    if (use_contact_model){
+        quadlets_per_sample += 1;
+    }
+
     return quadlets_per_sample;
 }
 
@@ -442,6 +476,7 @@ static double ts_diff_s(const timespec &start, const timespec &end) {
     // see calculate_quadlets_per_sample method for data formatting
 static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_packet, uint8_t num_encoders, uint8_t num_motors)
 {
+
     if (data_packet == NULL) {
         cout << "[ERROR - load_data_packet] databuffer pointer is null" << endl;
         return false;
@@ -454,6 +489,8 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
     uint16_t samples_per_packet = calculate_samples_per_packet(num_encoders, num_motors);
     uint16_t count = 0;
+
+    printf("inside load data packet\n");
 
     // CAPTURE DATA
     for (int j = 0; j < samples_per_packet; j++) {
@@ -486,11 +523,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         // DATA 2: encoder position
         for (int i = 0; i < num_encoders; i++) {
             int32_t encoder_pos = dvrk_controller.Board->GetEncoderPosition(i) + dvrk_controller.Board->GetEncoderMidRange();
-            printf("encoder_pos first %d: %i\n", i, encoder_pos);
 
             if (use_si_units) {
                 float encoder_pos_si = convert_enc_pos_to_si_units(cfg, encoder_pos, i);
-                printf("ENCODER POS %d: %f\n", i, encoder_pos_si);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&encoder_pos_si);
             } else {
                 data_packet[count++] = static_cast<uint32_t>(encoder_pos + dvrk_controller.Board->GetEncoderMidRange());
@@ -501,8 +536,9 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
         for (int i = 0; i < num_encoders; i++) {
             float encoder_velocity_float = static_cast<float>(dvrk_controller.Board->GetEncoderVelocityPredicted(i));
 
+            float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, encoder_velocity_float, i);
+            contact_velocity[i] = encoder_velocity_si;
             if (use_si_units) {
-                float encoder_velocity_si = convert_enc_vel_to_si_units(cfg, encoder_velocity_float, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_si);
             } else {
                 data_packet[count++] = *reinterpret_cast<uint32_t *>(&encoder_velocity_float);
@@ -516,15 +552,28 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
             uint16_t motor_curr = (uint16_t)(raw_quadlet & 0x0000FFFF);
             uint16_t cmd_curr   = (uint16_t)((raw_quadlet >> 16) & 0x0000FFFF);
 
+            float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
+            contact_torque[i] = motor_torque;
             if (use_si_units) {
-                float motor_torque = convert_torque_to_si_units(cfg, motor_curr, i);
-                float cmd_torque   = convert_torque_command_to_si_units(cfg, cmd_curr, i);
+                float cmd_torque = convert_torque_command_to_si_units(cfg, cmd_curr, i);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&motor_torque);
                 data_packet[count++] = *reinterpret_cast<uint32_t*>(&cmd_torque);
             } else {
                 data_packet[count++] = (uint32_t)(((uint32_t)cmd_curr << 16) | motor_curr);
             }
         }
+
+        if (use_contact_model){
+
+            printf("using contact model\n");
+
+            uint32_t contact_pred = (uint32_t) contact_detection_prediction(dvrk_controller.Board, *ORT, contact_velocity, contact_torque);
+
+            printf("we good ?\n");
+            data_packet[count++] = contact_pred;
+        }
+
+        printf("finished loaing contact model\n");
 
         if (use_ps_io_flag){
             data_packet[count++] = dvrk_controller.Board->ReadDigitalIO();
@@ -735,10 +784,21 @@ SM wait_for_host_flag_value(SM sm){
     sm.udp_ret = udp_nonblocking_receive(&udp_host, &flag_cmd, sizeof(flag_cmd));
 
     if (sm.udp_ret > 0) {
-        use_ps_io_flag = (flag_cmd & ENABLE_PSIO_MSK);
-        use_pot_flag   = (flag_cmd & ENABLE_POT_MSK);
-        useSampleRate  = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
-        use_si_units   = (flag_cmd & ENABLE_SI_UNITS_MSK);
+        use_ps_io_flag      = (flag_cmd & ENABLE_PSIO_MSK);
+        use_pot_flag        = (flag_cmd & ENABLE_POT_MSK);
+        useSampleRate       = (flag_cmd & ENABLE_SAMPLE_RATE_MSK);
+        use_si_units        = (flag_cmd & ENABLE_SI_UNITS_MSK);
+        use_contact_model   = (flag_cmd & ENABLE_CONTACT_DETECTION_MSK);
+
+        if (use_contact_model && !ORT.has_value()) {
+            const char* model_path = "/media/contact_model/contact_lstm_model_working.onnx";
+            if (access(model_path, R_OK) != 0) {
+                perror("[ERROR] Cannot open contact model");
+                use_contact_model = false;
+            } else {
+                ORT.emplace(model_path);
+            }
+        }
 
         cout << "Received Flag Byte: 0x" << std::hex << static_cast<int>(flag_cmd) << std::dec << endl;
 
@@ -1014,6 +1074,16 @@ static int dataCollectionStateMachine()
         sm.state = SM_TERMINATE;
         sm.ret = SM_PS_IO_FAIL;
     }
+
+    if (use_contact_model){
+        const char* model_path = "/media/contact_model/contact_detection_model_working.onnx";
+        if (access(model_path, R_OK) != 0) {
+            perror("[ERROR] Cannot open contact model");
+            return -1;
+        }
+        ORT.emplace(model_path);
+    }
+    
 
     sm.state = SM_WAIT_FOR_HOST_HANDSHAKE;
 

@@ -62,6 +62,7 @@ class DataCollection {
             uint32_t digital_io;
             uint32_t mio_pins;
             uint16_t pot_values[MAX_NUM_MOTORS];
+            uint32_t contact_prediction;
         } proc_sample_raw;
 
         struct ProcessedSampleSI {
@@ -74,6 +75,7 @@ class DataCollection {
             uint32_t digital_io;
             uint32_t mio_pins;
             uint16_t pot_values[MAX_NUM_MOTORS];
+            uint32_t contact_prediction;
         } proc_sample_si;
 
         struct DC_Time {
@@ -100,6 +102,9 @@ class DataCollection {
         uint16_t sample_rate = 0;
 
         bool use_si_units = false;
+
+        bool use_contact_model = false;
+        
         string robot_config_json = "";
 
         bool stop_data_collection_flag;

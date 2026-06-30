@@ -82,7 +82,7 @@ static void printUsage(const char *progName)
     cout << endl;
     cout << "                 dVRK Data Collection Program" << endl;
     cout << "|-----------------------------------------------------------------------" << endl;
-    cout << "|Usage: " << progName << " <boardID> [-t <seconds>] [-s <Hz>] [-i] [-p] [-c <json>]" << endl;
+    cout << "|Usage: " << progName << " <boardID> [-t <seconds>] [-s <Hz>] [-i] [-p] [-u <json>] [-c]" << endl;
     cout << "|" << endl;
     cout << "|Arguments:" << endl;
     cout << "|  <boardID>          Required. ID of the board to connect to." << endl;
@@ -92,7 +92,8 @@ static void printUsage(const char *progName)
     cout << "|  -s <Hz>            Optional. Sample rate in Hz (integer)." << endl;
     cout << "|  -i                 Optional. Include PS IO in data packet." << endl;
     cout << "|  -p                 Optional. Include potentiometer readings in data packet." << endl;
-    cout << "|  -c <json_path>     Optional. Path to robot config JSON for SI unit conversion." << endl;
+    cout << "|  -u <json_path>     Optional. Path to robot config JSON for SI unit conversion." << endl;
+    cout << "|  -c                 Optional. Use contact detection model." << endl;
     cout << "|  -h                 Show this help message." << endl;
     cout << "|" << endl;
     cout << "|[NOTE] Ensure the server is started before running the client." << endl;
@@ -124,6 +125,7 @@ int main(int argc, char *argv[])
     bool use_ps_io_flag = false;
     bool use_pot_flag = false;
     bool use_si_units_flag = false;
+    bool use_contact_model_flag = false;
     string robot_config_path = "";
     bool use_sample_rate = false;
     uint8_t options_mask = 0x00;
@@ -156,7 +158,7 @@ int main(int argc, char *argv[])
     opterr = 0;
     optind = 1;
     int opt = 0;
-    while ((opt = getopt(argc - 1, argv + 1, "t:s:ipc:h")) != -1) {
+    while ((opt = getopt(argc - 1, argv + 1, "t:s:ipu:ch")) != -1) {
         switch (opt) {
             case 't':
                 if (!isFloat(optarg)) {
@@ -188,10 +190,14 @@ int main(int argc, char *argv[])
                 cout << "Potentiometer readings will be included in data packet!" << endl;
                 break;
 
-            case 'c':
+            case 'u':
                 use_si_units_flag = true;
                 robot_config_path = optarg;
                 cout << "Converting data to SI Units!" << endl;
+                break;
+            case 'c':
+                use_contact_model_flag = true;
+                cout << "Using contact detection model!" << endl;
                 break;
 
             case 'h':
@@ -199,7 +205,7 @@ int main(int argc, char *argv[])
                 return 0;
 
             case '?':
-                if (optopt == 't' || optopt == 's' || optopt == 'c') {
+                if (optopt == 't' || optopt == 's' || optopt == 'u') {
                     cout << "[ERROR] Option -" << static_cast<char>(optopt) << " requires a value" << endl;
                 } else {
                     cout << "[ERROR] Invalid arg: -" << static_cast<char>(optopt) << endl;
@@ -230,6 +236,10 @@ int main(int argc, char *argv[])
     }
     if (use_si_units_flag) {
         options_mask |= ENABLE_SI_UNITS_MSK;
+    }
+
+    if (use_contact_model_flag){
+        options_mask |= ENABLE_CONTACT_DETECTION_MSK;
     }
 
     bool ret;
