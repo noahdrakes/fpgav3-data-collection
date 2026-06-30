@@ -181,17 +181,30 @@ struct ORT_Object {
     Ort::Env env;
     Ort::Session session;
     Ort::MemoryInfo memory_info;
-    std::vector<int64_t> input_shape;
+    std::array<int64_t, 3> input_shape;
     Ort::AllocatedStringPtr input_name;
     Ort::AllocatedStringPtr output_name;
+    Ort::RunOptions run_options;
+    std::array<float, 12> input_buf;
+    Ort::Value input_tensor;
 
-    ORT_Object(const std::string& model_path, int num_threads = 2)
+    ORT_Object(const std::string& model_path, int num_threads = 1)
         : env(ORT_LOGGING_LEVEL_WARNING, "contact_lstm")
-        , session(env, model_path.c_str(), [&]{ Ort::SessionOptions o; o.SetIntraOpNumThreads(num_threads); return o; }())
+        , session(env, model_path.c_str(), [&]{
+            Ort::SessionOptions o;
+            o.SetIntraOpNumThreads(num_threads);
+            o.SetInterOpNumThreads(1);
+            o.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
+            return o;
+          }())
         , memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
         , input_shape({1, 1, 12})
         , input_name(session.GetInputNameAllocated(0, Ort::AllocatorWithDefaultOptions{}))
         , output_name(session.GetOutputNameAllocated(0, Ort::AllocatorWithDefaultOptions{}))
+        , run_options()
+        , input_buf{}
+        , input_tensor(Ort::Value::CreateTensor<float>(
+            memory_info, input_buf.data(), 12, input_shape.data(), input_shape.size()))
     {}
 };
 
@@ -199,61 +212,30 @@ std::optional<ORT_Object> ORT;
 
 bool contact_detection_prediction(AmpIO *board, ORT_Object& ort, const float* encoder_vel, const float* torque_feedback){
 
-    uint8_t num_encoders = 6;
-    uint8_t num_motors = 6;
-
-    // lets combine the enc velocity and torque into one vector
-
-    std::vector<float> input(num_encoders + num_motors);
-
-    for (int i=0; i<num_encoders; i++){
-        input[i] = encoder_vel[i];
-    }
-
-    for (int i=num_encoders; i < num_encoders + num_motors; i++){
-        input[i] = torque_feedback[i - num_encoders];
-    }
-
-    // normalization stats from training config (normalize=true)
-    const std::array<float, 12> feat_mean = {
+    static constexpr std::array<float, 12> feat_mean = {
         -0.0002824742114171386f, -3.650841608759947e-05f,  1.22635419756989e-05f,
          0.001427539624273777f,  -8.851468010107055e-05f,  0.0002031530166277662f,
         -0.6210437417030334f,    3.9810116291046143f,      -4.167459487915039f,
         -0.003561527468264103f,   0.006435718387365341f,    0.03592592105269432f
     };
-    const std::array<float, 12> feat_std = {
+    static constexpr std::array<float, 12> feat_std = {
         0.2544010877609253f,  0.1120990440249443f,  0.010202210396528244f,
         0.2805119752883911f,  0.25634005665779114f, 0.6305540204048157f,
         1.3269498348236084f,  1.6260298490524292f,  5.9530720710754395f,
         0.030428461730480194f, 0.03421192616224289f, 0.04092755541205406f
     };
 
-    std::array<float, 12> normalized;
-    for (int i = 0; i < 12; ++i)
-        normalized[i] = (input[i] - feat_mean[i]) / feat_std[i];
+    for (int i = 0; i < 6; i++)
+        ort.input_buf[i]     = (encoder_vel[i]     - feat_mean[i])     / feat_std[i];
+    for (int i = 0; i < 6; i++)
+        ort.input_buf[6 + i] = (torque_feedback[i] - feat_mean[6 + i]) / feat_std[6 + i];
 
-
-    Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-        ort.memory_info,
-        normalized.data(),
-        normalized.size(),
-        ort.input_shape.data(),
-        ort.input_shape.size()
-    );
-
-    const char* input_names[] = {ort.input_name.get()};
+    const char* input_names[]  = {ort.input_name.get()};
     const char* output_names[] = {ort.output_name.get()};
 
-    auto outputs = ort.session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+    auto outputs = ort.session.Run(ort.run_options, input_names, &ort.input_tensor, 1, output_names, 1);
 
-    float* output = outputs[0].GetTensorMutableData<float>();
-
-    float contact_prob = output[0];
-    int contact_pred = contact_prob >= 0.5f ? 1 : 0;
-
-    // cout << "prediction : " << (bool) contact_pred << endl;
-
-    return (bool) contact_pred;
+    return outputs[0].GetTensorMutableData<float>()[0] >= 0.5f;
 
 }
 
@@ -557,11 +539,7 @@ static bool load_data_packet(Dvrk_Controller dvrk_controller, uint32_t *data_pac
 
         if (use_contact_model){
 
-            // printf("using contact model\n");
-
             uint32_t contact_pred = (uint32_t) contact_detection_prediction(dvrk_controller.Board, *ORT, contact_velocity, contact_torque);
-
-            // printf("we good ?\n");
             data_packet[count++] = contact_pred;
         }
 
